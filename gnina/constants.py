@@ -54,6 +54,24 @@ CNN_SCORING_CHOICES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Built-in CNN models / ensembles (--cnn).  'default' means: do not pass --cnn
+# and let gnina use its default ensemble (recommended).  The rest are a curated
+# subset of the single models / ensembles accepted by gnina 1.3 --cnn.
+# ---------------------------------------------------------------------------
+CNN_MODEL_DEFAULT = 0
+
+CNN_MODEL_CHOICES = [
+    'default',
+    'fast',
+    'default2017',
+    'crossdock_default2018',
+    'redock_default2018',
+    'general_default2018',
+    'dense',
+    'all_default_to_default_1_3',
+]
+
+# ---------------------------------------------------------------------------
 # Empirical scoring functions
 # ---------------------------------------------------------------------------
 SCORING_DEFAULT  = 0
@@ -71,14 +89,37 @@ SCORING_CHOICES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Box definition modes (used when fromReceptor == FROM_RECEPTOR)
+# Run mode: full docking vs. pose-level operations on already placed ligands
 # ---------------------------------------------------------------------------
-BOX_MODE_AUTOBOX  = 0   # --autobox_ligand
-BOX_MODE_MANUAL   = 1   # explicit center + size
-BOX_MODE_ROI      = 2   # derived from pocket centre (internal, not a user choice)
+RUN_DOCK     = 0   # full global docking search (default)
+RUN_LOCAL    = 1   # --local_only : local optimisation inside the box
+RUN_MINIMIZE = 2   # --minimize   : energy minimisation of the input pose
+RUN_SCORE    = 3   # --score_only : just score the provided pose (no movement)
+
+RUN_MODE_CHOICES = [
+    'Dock (global search)',
+    'Local optimization',
+    'Energy minimization',
+    'Score only',
+]
 
 # ---------------------------------------------------------------------------
-# Output / pose sort order
+# Rescoring score modes — operate on already-docked poses (no global search).
+# Used by the dedicated rescoring protocol (ProtGninaScore), kept separate from
+# the docking RUN_* values above so each protocol owns its own enum.
+# ---------------------------------------------------------------------------
+SCORE_ONLY     = 0   # --score_only : evaluate the pose as-is, no movement
+SCORE_LOCAL    = 1   # --local_only : local optimisation around the pose
+SCORE_MINIMIZE = 2   # --minimize   : energy minimisation of the pose
+
+SCORE_MODE_CHOICES = [
+    'Score only',
+    'Local optimization',
+    'Energy minimization',
+]
+
+# ---------------------------------------------------------------------------
+# Output / pose sort order (--pose_sort_order)
 # ---------------------------------------------------------------------------
 SORT_CNN_SCORE    = 0
 SORT_CNN_AFFINITY = 1

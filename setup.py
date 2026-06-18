@@ -17,14 +17,14 @@ setup(
     description='Scipion plugin for GNINA molecular docking with CNN scoring',
     long_description=long_description,
     url='https://github.com/scipion-chem/scipion-chem-gnina',
-    author='Joaquin Algorta Bove',
-    author_email='your@email.com',
-    keywords='scipion docking gnina cnn deep-learning',
+    author='Joaquin Algorta',
+    author_email='scipion@cnb.csic.es',
+    keywords=['scipion', 'docking', 'gnina', 'cnn', 'deep-learning', 'scipion-3'],
     packages=find_packages(),
     install_requires=[requirements],
     include_package_data=True,
     package_data={
-        'gnina': ['gnina_logo.png'],
+        'gnina': ['icon.png', 'protocols.conf'],
     },
     entry_points={
         'pyworkflow.plugin': 'gnina = gnina'

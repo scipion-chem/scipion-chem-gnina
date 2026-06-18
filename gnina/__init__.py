@@ -35,7 +35,7 @@ from .bibtex import _bibtexStr
 
 from .constants import *
 
-_logo = 'gnina_logo.png'
+_logo = 'icon.png'
 _references = ['McNutt2021', 'McNutt2025']
 
 
