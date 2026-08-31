@@ -4,4 +4,4 @@
 # Find documentation here: https://scipion-em.github.io/docs/release-3.0.0/docs/developer/tutorials/creating-tests-for-template-calculator.html
 # **************************************************************************
 
-from .test_gnina import TestGninaDocking
+from .test_gnina import TestGninaDocking, TestGninaScore

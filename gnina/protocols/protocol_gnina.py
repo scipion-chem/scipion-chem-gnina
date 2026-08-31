@@ -40,10 +40,10 @@ from pwchem.utils import getBaseName, getBaseFileName, makeSubsets, runOpenBabel
 from .. import Plugin
 from ..constants import (
     CNN_SCORING_CHOICES, CNN_SCORING_RESCORE,
-    CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT,
+    CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT, CNN_MODEL_SENTINEL,
     SCORING_CHOICES, SCORING_DEFAULT,
     SORT_CHOICES,
-    GNINA_OUTPUT_SDF,
+    GNINA_OUTPUT_SDF, GNINA_FLEX_PDBQT,
 )
 
 FROM_PROTEIN = 0
@@ -89,20 +89,13 @@ class ProtGninaDocking(EMProtocol):
         form.addSection(label='Input')
         inputGroup = form.addGroup('Input specifications')
         inputGroup.addParam('fromReceptor', EnumParam, label='Dock on : ', default=FROM_POCKET,
-                            choices=['Whole protein', 'SetOfStructROIs'], display=EnumParam.DISPLAY_HLIST,
-                            help='Whether to dock on a whole protein surface or on specific regions (pockets).')
+                            choices=['Whole protein', 'SetOfStructROIs'], display=EnumParam.DISPLAY_HLIST)
         inputGroup.addParam('inputAtomStruct', PointerParam, pointerClass='AtomStruct',
-                            label='Receptor structure: ', condition=f'fromReceptor == {FROM_PROTEIN}',
-                            help='Protein structure to use as receptor. The whole protein bounding box '
-                                 '(plus a buffer) is used as search space.')
+                            label='Receptor structure: ', condition=f'fromReceptor == {FROM_PROTEIN}')
         inputGroup.addParam('inputStructROIs', PointerParam, pointerClass="SetOfStructROIs",
-                            label='Input pockets: ', condition=f'fromReceptor == {FROM_POCKET}',
-                            help="The protein structural ROIs (pockets) to dock in. Docking is run "
-                                 "independently for each pocket.")
+                            label='Input pockets: ', condition=f'fromReceptor == {FROM_POCKET}')
         inputGroup.addParam('inputSmallMolecules', PointerParam, pointerClass='SetOfSmallMolecules',
-                            label='Ligand set: ', allowsNull=False,
-                            help='Set of small molecules to dock. Ligands are split into one multi-ligand '
-                                 'SDF per thread and passed to gnina for efficiency.')
+                            label='Ligand set: ', allowsNull=False)
         inputGroup.addParam('pocketRadiusN', FloatParam, label='Grid radius vs ROI radius: ',
                             default=1.2, allowsNull=False, condition=f'fromReceptor == {FROM_POCKET}',
                             help='The size of each StructROI multiplied by this factor is used as the '
@@ -110,7 +103,7 @@ class ProtGninaDocking(EMProtocol):
         inputGroup.addParam('autoboxAdd', FloatParam, label='Autobox buffer (Å): ',
                             default=4.0, condition=f'fromReceptor == {FROM_PROTEIN}',
                             help='Buffer space added on every side of the auto-generated box that wraps '
-                                 'the whole receptor (gnina --autobox_add).')
+                                 'the whole receptor.')
 
         # ---- Docking & Scoring ----------------------------------------- #
         form.addSection(label='Docking & Scoring')
@@ -133,9 +126,18 @@ class ProtGninaDocking(EMProtocol):
                                '- *none*: purely empirical scoring (fastest, no CNN).')
         cnnGroup.addParam('cnnModel', EnumParam, choices=CNN_MODEL_CHOICES, default=CNN_MODEL_DEFAULT,
                           label='CNN model: ', expertLevel=LEVEL_ADVANCED,
-                          help='Built-in CNN model to use. "default" lets gnina use its default model '
-                               'ensemble (recommended). Selecting a single model (e.g. crossdock_default2018) '
-                               'is faster but may be less robust.')
+                          help='Built-in CNN model used for scoring (gnina --cnn).\n\n'
+                               '- *gnina default ensemble* (recommended): does not pass --cnn, so gnina '
+                               'uses its own default model ensemble. This ensemble has no name accepted '
+                               'by --cnn, so this entry is the only way to select it.\n'
+                               '- *fast* / *dense*: a small, quick network vs. a heavier DenseNet one.\n'
+                               '- *default2017* / *default1.0*: the models earlier gnina versions used.\n'
+                               '- *crossdock_/redock_/general_default2018*: the 2018 family, differing in '
+                               'the poses they were trained on (cross-docked, re-docked, general set).\n'
+                               '- *..._ensemble*: averages every model sharing that prefix. More robust '
+                               'than the matching single model, and proportionally slower.\n\n'
+                               'Note the choice changes the scores appreciably, so keep it fixed when '
+                               'comparing runs.')
         cnnGroup.addParam('cnnRotation', IntParam, default=0, label='CNN rotations: ',
                           expertLevel=LEVEL_ADVANCED,
                           help='Evaluate this many random rotations of each pose with the CNN and average '
@@ -147,9 +149,9 @@ class ProtGninaDocking(EMProtocol):
         form.addParam('poseSortOrder', EnumParam, choices=SORT_CHOICES, default=0,
                       label='Sort poses by: ', expertLevel=LEVEL_ADVANCED,
                       help='Criterion used by gnina to rank the output poses (--pose_sort_order).')
-        form.addParam('addH', BooleanParam, default=True, label='Add hydrogens to ligands: ',
+        form.addParam('addH', BooleanParam, default=False, label='Add hydrogens to ligands: ',
                       expertLevel=LEVEL_ADVANCED,
-                      help='Let gnina automatically add hydrogens to the ligands (on by default).')
+                      help='Let gnina automatically add hydrogens to the ligands.')
         form.addParam('seed', IntParam, default=42, label='Random seed: ', expertLevel=LEVEL_ADVANCED,
                       help='Set to a positive integer for reproducible runs. Set to 0 for a random seed.')
 
@@ -158,7 +160,7 @@ class ProtGninaDocking(EMProtocol):
         flexGroup.addParam('doFlexRes', BooleanParam, label='Add flexible residues: ', default=False,
                            help='Treat some receptor residues as flexible during docking.')
         flexGroup.addParam('flexChain', StringParam, label='Residue chain: ', condition='doFlexRes',
-                           help='Specify the protein chain (use the wizard).')
+                           help='Specify the protein chain.')
         flexGroup.addParam('flexRes', StringParam, label='Flexible residues: ', condition='doFlexRes',
                            help='Comma-separated list of chain:resid (e.g. A:42,A:43) or use the wizard.')
 
@@ -203,11 +205,7 @@ class ProtGninaDocking(EMProtocol):
         self.other2pdbqt(receptorFile, self.getReceptorPDBQT())
 
     def convertLigandsStep(self, molSet, it):
-        """Merge a ligand subset into a single multi-ligand SDF for this thread.
-
-        Each molecule block is retitled with the ligand base name so the poses in
-        the gnina output SDF can be matched back to the input molecules.
-        """
+        """Merge a ligand subset into a single multi-ligand SDF for this thread"""
         outSdf = self._getSubsetLigandFile(it)
         with open(outSdf, 'w') as fout:
             for mol in molSet:
@@ -217,10 +215,8 @@ class ProtGninaDocking(EMProtocol):
                 with open(sdfFile) as fin:
                     blocks = [b for b in fin.read().split('$$$$') if b.strip()]
                 for block in blocks:
-                    block = block.lstrip('\n')
-                    rest = block.split('\n', 1)
-                    body = rest[1] if len(rest) > 1 else ''
-                    fout.write(f'{molName}\n{body.rstrip()}\n$$$$\n')
+                    body = self._cleanBlock(block)
+                    fout.write(f'{molName}\n{body}\n$$$$\n')
 
     def dockingStep(self, subsetId, pocket=None):
         """Run gnina for one (ligand subset, pocket) target pair."""
@@ -247,6 +243,7 @@ class ProtGninaDocking(EMProtocol):
         inputMolsDic = {getBaseName(mol.getFileName()): mol.clone()
                         for mol in self.inputSmallMolecules.get()}
 
+        recDir = self._getPath('outputReceptors')
         sdfFiles = sorted(glob.glob(self._getExtraPath('*', 'subset_*', GNINA_OUTPUT_SDF)))
         for sdfFile in sdfFiles:
             pocketId = self._pocketIdFromPath(sdfFile)
@@ -255,7 +252,9 @@ class ProtGninaDocking(EMProtocol):
             # the subset (thread) layout is internal and must not leak into the name.
             prefix = f'g{gridId}_'
 
-            for poseData in self.splitGninaSDF(sdfFile, outDir, prefix=prefix):
+            poses = self.splitGninaSDF(sdfFile, outDir, prefix=prefix)
+
+            for poseIdx, poseData in enumerate(poses):
                 srcMol = inputMolsDic.get(poseData['molName'])
                 if srcMol is None:
                     print(f"Warning: docked molecule '{poseData['molName']}' not found "
@@ -269,16 +268,23 @@ class ProtGninaDocking(EMProtocol):
                 newMol.setGridId(gridId)
                 newMol.setMolClass('Gnina')
                 newMol.setDockId(self.getObjId())
+                # With flexible residues the receptor side chains move, so each pose
+                # gets its own receptor built from gnina's --out_flex output.
+                # Each pose records the receptor it was docked against the rigid one otherwise.
+                poseRecFiles = self._buildFlexReceptors(sdfFile, poses, recFile, recDir)
+                newMol.setProteinFile(os.path.relpath(
+                    poseRecFiles[poseIdx] if poseRecFiles else recFile))
 
-                energy = self.getTagValueFromSdf(poseData['poseFile'], 'minimizedAffinity')
-                cnnScore = self.getTagValueFromSdf(poseData['poseFile'], 'CNNscore')
-                cnnAff = self.getTagValueFromSdf(poseData['poseFile'], 'CNNaffinity')
-                if energy is not None:
-                    newMol._energy = pwobj.Float(energy)
-                if cnnScore is not None:
-                    newMol._cnnScore = pwobj.Float(cnnScore)
-                if cnnAff is not None:
-                    newMol._cnnAffinity = pwobj.Float(cnnAff)
+                # Always set the three attributes, even when gnina did not report
+                # a tag: a Set fixes its column schema from the first item it
+                # stores, so a later item missing one of them would abort the
+                # insert with an AttributeError.
+                newMol._energy = pwobj.Float(
+                    self.getTagValueFromSdf(poseData['poseFile'], 'minimizedAffinity'))
+                newMol._cnnScore = pwobj.Float(
+                    self.getTagValueFromSdf(poseData['poseFile'], 'CNNscore'))
+                newMol._cnnAffinity = pwobj.Float(
+                    self.getTagValueFromSdf(poseData['poseFile'], 'CNNaffinity'))
 
                 outputSet.append(newMol)
 
@@ -305,18 +311,17 @@ class ProtGninaDocking(EMProtocol):
             args += f' --center_x {xCenter} --center_y {yCenter} --center_z {zCenter}'
             args += f' --size_x {diams[0]} --size_y {diams[1]} --size_z {diams[2]}'
 
-        # CNN scoring + model
+        # CNN scoring + model. The first CNN_MODEL choice is a sentinel: gnina's
+        # default ensemble has no --cnn name, so it is reached by omitting the flag.
         args += f' --cnn_scoring {CNN_SCORING_CHOICES[self.cnnScoring.get()]}'
         cnnModel = CNN_MODEL_CHOICES[self.cnnModel.get()]
-        if cnnModel != 'default':
+        if cnnModel != CNN_MODEL_SENTINEL:
             args += f' --cnn {cnnModel}'
         if self.cnnRotation.get() > 0:
             args += f' --cnn_rotation {self.cnnRotation.get()}'
 
-        # Empirical scoring (only if non-default)
-        scoringFn = SCORING_CHOICES[self.scoring.get()]
-        if scoringFn != 'default':
-            args += f' --scoring {scoringFn}'
+        # Empirical scoring ('default' is itself a valid gnina scoring function)
+        args += f' --scoring {SCORING_CHOICES[self.scoring.get()]}'
 
         # Search parameters
         args += f' --exhaustiveness {self.exhaustiveness.get()}'
@@ -332,11 +337,13 @@ class ProtGninaDocking(EMProtocol):
         if seed > 0:
             args += f' --seed {seed}'
 
-        # Flexible residues
+        # Flexible residues. --out_flex stores the moved side chains of every
+        # pose so each output molecule can carry its own receptor.
         if self.doFlexRes.get():
             flexRes = self.flexRes.get().strip() if self.flexRes.get() else ''
             if flexRes:
                 args += f' --flexres {flexRes}'
+                args += f' --out_flex "{os.path.join(os.path.dirname(outFile), GNINA_FLEX_PDBQT)}"'
 
         # GPU / CPU
         gpuList = self._getGPUIds()
@@ -377,6 +384,96 @@ class ProtGninaDocking(EMProtocol):
                           'poseFile': os.path.abspath(poseFile)})
         return poses
 
+    # ------------------------------------------------------------------ #
+    #  Utils                                                             #
+    # ------------------------------------------------------------------ #
+    def _buildFlexReceptors(self, sdfFile, poses, rigidRecFile, recDir):
+        """Build one receptor file per pose from gnina's --out_flex output.
+
+        With --flexres the receptor side chains move, so the rigid receptor no
+        longer describes the complex. gnina writes the moved side chains to the
+        --out_flex PDBQT as MODEL blocks: one block per flexible residue, with
+        the MODEL id shared by all residues of the same pose. Blocks are grouped
+        by MODEL id (in file order, which matches the pose order of the output
+        SDF) and their coordinates are substituted into a copy of the rigid
+        receptor, giving a complete receptor per pose.
+
+        Returns a list of receptor paths aligned with `poses`, or None when
+        flexible docking is off or the output cannot be matched to the poses.
+        """
+        if not self.doFlexRes.get():
+            return None
+
+        flexFile = os.path.join(os.path.dirname(sdfFile), GNINA_FLEX_PDBQT)
+        if not os.path.exists(flexFile):
+            print(f'Warning: no flexible receptor output at {flexFile}; '
+                  f'poses will reference the rigid receptor.')
+            return None
+
+        # Group the MODEL blocks by their MODEL id, keeping file order.
+        groups, curId, curAtoms = [], None, []
+        for line in open(flexFile):
+            if line.startswith('MODEL'):
+                modelId = line.split()[1] if len(line.split()) > 1 else ''
+                if curId is not None and modelId != curId:
+                    groups.append(curAtoms)
+                    curAtoms = []
+                curId = modelId
+            elif line.startswith(('ATOM', 'HETATM')):
+                curAtoms.append(line)
+        if curAtoms:
+            groups.append(curAtoms)
+
+        if len(groups) != len(poses):
+            print(f'Warning: {len(groups)} flexible-receptor group(s) for '
+                  f'{len(poses)} pose(s) in {flexFile}; poses will reference the '
+                  f'rigid receptor.')
+            return None
+
+        makePath(recDir)
+        recFiles = []
+        for poseData, atomLines in zip(poses, groups):
+            # (chain, resNum, atomName) -> moved coordinate columns
+            movedDic = {}
+            for line in atomLines:
+                movedDic[self._pdbqtAtomKey(line)] = line[30:54]
+
+            # One single-structure receptor file per pose (no MODEL blocks).
+            outRec = os.path.join(recDir, f'{getBaseName(poseData["poseFile"])}_rec.pdbqt')
+            used, kept, lastSerial = set(), [], 0
+            for line in open(rigidRecFile):
+                if line.startswith(('ATOM', 'HETATM')):
+                    atomKey = self._pdbqtAtomKey(line)
+                    newCoords = movedDic.get(atomKey)
+                    if newCoords is not None:
+                        line = line[:30] + newCoords + line[54:]
+                        used.add(atomKey)
+                    try:
+                        lastSerial = max(lastSerial, int(line[6:11]))
+                    except ValueError:
+                        pass
+                kept.append(line)
+
+            # gnina protonates the flexible side chains, so the moved residue can
+            # carry polar hydrogens absent from the rigid receptor. Append them
+            # (renumbered) instead of dropping them, or the side chain would come
+            # out incomplete.
+            extra = []
+            for line in atomLines:
+                if self._pdbqtAtomKey(line) not in used:
+                    lastSerial += 1
+                    extra.append(f'{line[:6]}{lastSerial:>5}{line[11:]}')
+
+            with open(outRec, 'w') as fOut:
+                fOut.writelines(kept + extra)
+            recFiles.append(os.path.abspath(outRec))
+        return recFiles
+
+    @staticmethod
+    def _pdbqtAtomKey(line):
+        """Identify a PDBQT atom by (atom name, chain, residue number)."""
+        return line[12:16].strip(), line[21].strip(), line[22:27].strip()
+
     @staticmethod
     def getTagValueFromSdf(sdfFile, tag):
         """Return the float value of an SDF data tag (> <tag>) from a pose file."""
@@ -396,6 +493,19 @@ class ProtGninaDocking(EMProtocol):
             if part.startswith('pocket_'):
                 return int(part.split('_')[1])
         return None
+
+    @staticmethod
+    def _cleanBlock(block):
+        """Return an SDF block's body (everything after the title line, up to and
+        including 'M  END'), dropping any trailing data tags, so they must be stripped before docking.
+        """
+        lines = block.lstrip('\n').splitlines()
+        body = []
+        for ln in lines[1:]:               # skip the original title line
+            body.append(ln)
+            if ln.strip() == 'M  END':     # molblock terminator; drop data tags after it
+                break
+        return '\n'.join(body).rstrip()
 
     # ------------------------------------------------------------------ #
     #  Path helpers                                                        #

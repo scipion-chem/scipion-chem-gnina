@@ -23,6 +23,10 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # **************************************************************************
+# Plugin version (independent of the wrapped GNINA version)
+ALPHA_VERSION = '0.1'
+
+# Wrapped GNINA release
 GNINA_DEFAULT_VERSION = '1.3.2'
 
 GNINA_DIC = {'name': 'gnina', 'version': GNINA_DEFAULT_VERSION, 'home': 'GNINA_HOME'}
@@ -54,26 +58,35 @@ CNN_SCORING_CHOICES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Built-in CNN models / ensembles (--cnn).  'default' means: do not pass --cnn
-# and let gnina use its default ensemble (recommended).  The rest are a curated
-# subset of the single models / ensembles accepted by gnina 1.3 --cnn.
-# ---------------------------------------------------------------------------
-CNN_MODEL_DEFAULT = 0
+# Built-in CNN models / ensembles (--cnn).
 
+CNN_MODEL_DEFAULT = 0
+CNN_MODEL_SENTINEL = 'gnina default ensemble'
+
+# New entries must be APPENDED: the index is what gets stored in saved
+# workflows, so reordering would silently change the model of existing runs.
 CNN_MODEL_CHOICES = [
-    'default',
+    CNN_MODEL_SENTINEL,
+    # Single models
     'fast',
     'default2017',
+    'default1.0',
     'crossdock_default2018',
     'redock_default2018',
     'general_default2018',
     'dense',
-    'all_default_to_default_1_3',
+    # Ensembles: '<prefix>_ensemble' averages every model with that prefix.
+    # More robust than the matching single model, proportionally slower.
+    'all_default_to_default_1_3_ensemble',
+    'crossdock_default2018_ensemble',
+    'redock_default2018_ensemble',
+    'general_default2018_ensemble',
+    'dense_ensemble',
 ]
 
 # ---------------------------------------------------------------------------
-# Empirical scoring functions
-# ---------------------------------------------------------------------------
+# Empirical scoring functions (--scoring).
+
 SCORING_DEFAULT  = 0
 SCORING_VINA     = 1
 SCORING_VINARDO  = 2
@@ -88,26 +101,12 @@ SCORING_CHOICES = [
     'dkoes_scoring',
 ]
 
-# ---------------------------------------------------------------------------
-# Run mode: full docking vs. pose-level operations on already placed ligands
-# ---------------------------------------------------------------------------
-RUN_DOCK     = 0   # full global docking search (default)
-RUN_LOCAL    = 1   # --local_only : local optimisation inside the box
-RUN_MINIMIZE = 2   # --minimize   : energy minimisation of the input pose
-RUN_SCORE    = 3   # --score_only : just score the provided pose (no movement)
-
-RUN_MODE_CHOICES = [
-    'Dock (global search)',
-    'Local optimization',
-    'Energy minimization',
-    'Score only',
-]
+# Name of the per-pose flexible-receptor file written by gnina (--out_flex)
+GNINA_FLEX_PDBQT = 'flex_receptor.pdbqt'
 
 # ---------------------------------------------------------------------------
 # Rescoring score modes — operate on already-docked poses (no global search).
-# Used by the dedicated rescoring protocol (ProtGninaScore), kept separate from
-# the docking RUN_* values above so each protocol owns its own enum.
-# ---------------------------------------------------------------------------
+
 SCORE_ONLY     = 0   # --score_only : evaluate the pose as-is, no movement
 SCORE_LOCAL    = 1   # --local_only : local optimisation around the pose
 SCORE_MINIMIZE = 2   # --minimize   : energy minimisation of the pose

@@ -1,0 +1,15 @@
+{
+	"datasets": ["model_building_tutorial", "smallMolecules"],
+	"skippable": {
+		"gpu": [
+			"test_gnina.TestGninaDocking",
+			"test_gnina.TestGninaScore"
+		],
+		"dependencies": [
+
+		],
+		"others": [
+
+		]
+	}
+}

@@ -1,4 +1,6 @@
 include *.txt
 include *.rst
 include LICENSE
-include myplugin/protocols.conf
+include gnina/protocols.conf
+include gnina/icon.png
+include gnina/testData.json

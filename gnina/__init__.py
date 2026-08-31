@@ -37,6 +37,7 @@ from .constants import *
 
 _logo = 'icon.png'
 _references = ['McNutt2021', 'McNutt2025']
+__version__ = ALPHA_VERSION
 
 
 class Plugin(pwchem.Plugin):

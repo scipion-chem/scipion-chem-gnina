@@ -40,7 +40,7 @@ from .. import Plugin
 from .protocol_gnina import ProtGninaDocking
 from ..constants import (
     CNN_SCORING_CHOICES, CNN_SCORING_RESCORE,
-    CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT,
+    CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT, CNN_MODEL_SENTINEL,
     SCORING_CHOICES, SCORING_DEFAULT,
     SCORE_MODE_CHOICES, SCORE_ONLY, SCORE_LOCAL, SCORE_MINIMIZE,
 )
@@ -99,24 +99,22 @@ class ProtGninaScore(ProtGninaDocking):
         inputGroup.addParam('inputSmallMolecules', PointerParam, pointerClass='SetOfSmallMolecules',
                             label='Docked small molecules: ', allowsNull=False,
                             help='Set of already-docked small molecules (with poses) to rescore. '
-                                 'Every pose in the set is scored. The receptor is read from this '
-                                 'set protein file.')
+                                 'Every pose in the set is scored.')
 
         # ---- Rescoring ------------------------------------------------- #
         form.addSection(label='Rescoring')
         form.addParam('scoreMode', EnumParam, choices=SCORE_MODE_CHOICES, default=SCORE_ONLY,
                       label='Rescoring mode: ',
-                      help='- *Score only*: score the input pose without moving it (--score_only). '
+                      help='- *Score only*: score the input pose without moving it. '
                            'The original pose is kept; only the scores are added.\n'
-                           '- *Local optimization*: local search around the input pose (--local_only).\n'
-                           '- *Energy minimization*: minimise the input pose (--minimize).\n'
+                           '- *Local optimization*: local search around the input pose.\n'
+                           '- *Energy minimization*: minimise the input pose.\n'
                            'The last two modify the atoms, so the refined structure is stored as the '
                            'new pose.')
         form.addParam('autoboxAdd', FloatParam, label='Autobox buffer (Å): ',
                       default=4.0, expertLevel=LEVEL_ADVANCED,
                       help='Buffer space added on every side of the box auto-generated around the '
-                           'poses (gnina --autobox_add). Only relevant for the optimisation / '
-                           'minimisation modes.')
+                           'poses. Only relevant for the optimisation/minimisation modes.')
 
         cnnGroup = form.addGroup('CNN scoring')
         cnnGroup.addParam('cnnScoring', EnumParam, choices=CNN_SCORING_CHOICES, default=CNN_SCORING_RESCORE,
@@ -129,8 +127,18 @@ class ProtGninaScore(ProtGninaDocking):
                                '- *none*: purely empirical scoring (fastest, no CNN).')
         cnnGroup.addParam('cnnModel', EnumParam, choices=CNN_MODEL_CHOICES, default=CNN_MODEL_DEFAULT,
                           label='CNN model: ', expertLevel=LEVEL_ADVANCED,
-                          help='Built-in CNN model to use. "default" lets gnina use its default model '
-                               'ensemble (recommended).')
+                          help='Built-in CNN model used for scoring (gnina --cnn).\n\n'
+                               '- *gnina default ensemble* (recommended): does not pass --cnn, so gnina '
+                               'uses its own default model ensemble. This ensemble has no name accepted '
+                               'by --cnn, so this entry is the only way to select it.\n'
+                               '- *fast* / *dense*: a small, quick network vs. a heavier DenseNet one.\n'
+                               '- *default2017* / *default1.0*: the models earlier gnina versions used.\n'
+                               '- *crossdock_/redock_/general_default2018*: the 2018 family, differing in '
+                               'the poses they were trained on (cross-docked, re-docked, general set).\n'
+                               '- *..._ensemble*: averages every model sharing that prefix. More robust '
+                               'than the matching single model, and proportionally slower.\n\n'
+                               'Note the choice changes the scores appreciably, so keep it fixed when '
+                               'comparing runs.')
         cnnGroup.addParam('cnnRotation', IntParam, default=0, label='CNN rotations: ',
                           expertLevel=LEVEL_ADVANCED,
                           help='Evaluate this many random rotations of each pose with the CNN and average '
@@ -139,7 +147,7 @@ class ProtGninaScore(ProtGninaDocking):
         form.addParam('scoring', EnumParam, choices=SCORING_CHOICES, default=SCORING_DEFAULT,
                       label='Empirical scoring function: ', expertLevel=LEVEL_ADVANCED,
                       help='Empirical scoring function used for the non-CNN stage of the pipeline.')
-        form.addParam('addH', BooleanParam, default=True, label='Add hydrogens to ligands: ',
+        form.addParam('addH', BooleanParam, default=False, label='Add hydrogens to ligands: ',
                       expertLevel=LEVEL_ADVANCED,
                       help='Let gnina automatically add hydrogens to the ligands (on by default).')
         form.addParam('seed', IntParam, default=42, label='Random seed: ', expertLevel=LEVEL_ADVANCED,
@@ -170,10 +178,7 @@ class ProtGninaScore(ProtGninaDocking):
     # ------------------------------------------------------------------ #
     def scoreStep(self, molSet, it):
         """Score one subset of poses in a single gnina call.
-
-        Results are written to a per-subset JSON file (steps run in separate
-        processes) keyed by the pose base name, so createOutputStep can map them
-        back to the input molecules.
+        Results are written to a per-subset JSON file.
         """
         recFile = self.getReceptorPDBQT()
         minimizing = self.scoreMode.get() != SCORE_ONLY
@@ -184,8 +189,7 @@ class ProtGninaScore(ProtGninaDocking):
         logFile = os.path.join(runDir, 'gnina.log')
         outSdf = os.path.join(runDir, 'scored.sdf')
 
-        # Build a single multi-ligand SDF, each block retitled with its unique
-        # pose key so the scored entries can be matched back one-to-one.
+        # Build a single multi-ligand SDF.
         with open(inSdf, 'w') as fout:
             for mol in molSet:
                 poseFile = os.path.abspath(mol.getPoseFile())
@@ -223,6 +227,7 @@ class ProtGninaScore(ProtGninaDocking):
         """Copy the input set and annotate every pose with its GNINA scores."""
         inMols = self.inputSmallMolecules.get()
         minimizing = self.scoreMode.get() != SCORE_ONLY
+        recFile = self.getReceptorPDBQT()
 
         # Merge the per-batch score files: pose base name -> score dict.
         scores = {}
@@ -237,15 +242,15 @@ class ProtGninaScore(ProtGninaDocking):
             sd = scores.get(poseKey)
             if sd is None:
                 print(f"Warning: no GNINA score for pose '{poseKey}'; keeping it unscored.")
-            else:
-                if sd.get('energy') is not None:
-                    newMol._energy = pwobj.Float(sd['energy'])
-                if sd.get('cnnScore') is not None:
-                    newMol._cnnScore = pwobj.Float(sd['cnnScore'])
-                if sd.get('cnnAffinity') is not None:
-                    newMol._cnnAffinity = pwobj.Float(sd['cnnAffinity'])
-                if minimizing and sd.get('poseFile'):
-                    newMol.setPoseFile(sd['poseFile'])
+                sd = {}
+            # Set the three attributes
+            newMol._energy = pwobj.Float(sd.get('energy'))
+            newMol._cnnScore = pwobj.Float(sd.get('cnnScore'))
+            newMol._cnnAffinity = pwobj.Float(sd.get('cnnAffinity'))
+            if minimizing and sd.get('poseFile'):
+                newMol.setPoseFile(sd['poseFile'])
+            # Record the receptor the pose was (re)scored against.
+            newMol.setProteinFile(os.path.relpath(recFile))
             newMols.append(newMol)
 
         newMols.updateMolClass()
@@ -271,18 +276,17 @@ class ProtGninaScore(ProtGninaDocking):
         elif mode == SCORE_MINIMIZE:
             args += ' --minimize'
 
-        # CNN scoring + model
+        # CNN scoring + model. The first CNN_MODEL choice is a sentinel: gnina's
+        # default ensemble has no --cnn name, so it is reached by omitting the flag.
         args += f' --cnn_scoring {CNN_SCORING_CHOICES[self.cnnScoring.get()]}'
         cnnModel = CNN_MODEL_CHOICES[self.cnnModel.get()]
-        if cnnModel != 'default':
+        if cnnModel != CNN_MODEL_SENTINEL:
             args += f' --cnn {cnnModel}'
         if self.cnnRotation.get() > 0:
             args += f' --cnn_rotation {self.cnnRotation.get()}'
 
-        # Empirical scoring (only if non-default)
-        scoringFn = SCORING_CHOICES[self.scoring.get()]
-        if scoringFn != 'default':
-            args += f' --scoring {scoringFn}'
+        # Empirical scoring ('default' is itself a valid gnina scoring function)
+        args += f' --scoring {SCORING_CHOICES[self.scoring.get()]}'
 
         if not self.addH.get():
             args += ' --addH 0'
@@ -319,13 +323,7 @@ class ProtGninaScore(ProtGninaDocking):
         sdf = poseFile if ext == '.sdf' else os.path.abspath(convertToSdf(self, poseFile))
         with open(sdf) as fh:
             block = next((b for b in fh.read().split('$$$$') if b.strip()), '')
-        lines = block.lstrip('\n').splitlines()
-        body = []
-        for ln in lines[1:]:               # skip the original title line
-            body.append(ln)
-            if ln.strip() == 'M  END':     # molblock terminator; drop data tags after it
-                break
-        return '\n'.join(body)
+        return self._cleanBlock(block)
 
     @staticmethod
     def _iterSdfEntries(sdfFile):

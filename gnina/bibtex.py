@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # **************************************************************************
 # *
-# * Authors:     you (you@yourinstitution.email)
+# * Authors: Joaquin Algorta (joaquin.algorta@cnb.csic.es)
 # *
-# * your institution
+# * Biocomputing Unit, CNB-CSIC
 # *
 # * This program is free software; you can redistribute it and/or modify
 # * it under the terms of the GNU General Public License as published by
