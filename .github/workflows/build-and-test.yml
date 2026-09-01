@@ -2,7 +2,7 @@ name: Build plugin
 
 on:
   pull_request:
-    branches: [devel, master]
+    branches: [devel, main]
 
 jobs:
   build:
