@@ -66,7 +66,7 @@ class Plugin(pwchem.Plugin):
 
         gninaEnvName = cls.getEnvName(GNINA_DIC)
         installer.addCommand(
-            f'conda create -n {gninaEnvName} cudnn=9 cuda-cudart<13 -c nvidia -y',
+            f'conda create -n {gninaEnvName} cudnn=9 cuda-libraries=12 -c nvidia -y',
             'GNINA_ENV_CREATED'
         )
 
