@@ -66,7 +66,7 @@ class Plugin(pwchem.Plugin):
 
         gninaEnvName = cls.getEnvName(GNINA_DIC)
         installer.addCommand(
-            f'conda create -n {gninaEnvName} cudnn=9 -c nvidia -y',
+            f'conda create -n {gninaEnvName} cudnn=9 cuda-cudart<13 -c nvidia -y',
             'GNINA_ENV_CREATED'
         )
 
@@ -93,9 +93,6 @@ class Plugin(pwchem.Plugin):
     @classmethod
     def getGninaEnvActivation(cls):
         """Return any activation string needed before calling gnina.
-
-        gnina is a self-contained static binary so no conda env is required.
-        Returns an empty string unless the user overrides GNINA_ACTIVATION_CMD.
         """
         return cls.getVar(GNINA_ACTIVATION_CMD) if cls.getVar(GNINA_ACTIVATION_CMD) else ''
 
