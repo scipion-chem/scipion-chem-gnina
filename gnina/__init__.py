@@ -112,8 +112,7 @@ class Plugin(pwchem.Plugin):
         fullProgram = (
             f'{cls.getEnvActivationCommand(GNINA_DIC)} && '
             f'LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH '
-            f'{cls.getGninaBinary()}'
-        )
+            f'{cls.getGninaBinary()}')
         if not popen:
             protocol.runJob(fullProgram, args, env=cls.getEnviron(), cwd=cwd,
                             numberOfThreads=1)
