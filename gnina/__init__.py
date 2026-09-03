@@ -99,10 +99,7 @@ class Plugin(pwchem.Plugin):
     @classmethod
     def runGnina(cls, protocol, args, cwd=None, popen=False):
         """Run a gnina command inside a protocol step.
-
-        The conda env is activated first so that $CONDA_PREFIX is set, then
-        LD_LIBRARY_PATH is prepended with $CONDA_PREFIX/lib to make cudnn9
-        (and any other conda-managed libs) visible to the static binary.
+        LD_LIBRARY_PATH necessary to make cudnn9 visible
 
         :param protocol: calling Scipion protocol object
         :param args:     command-line argument string (without 'gnina' prefix)
