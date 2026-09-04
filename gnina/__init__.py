@@ -66,7 +66,7 @@ class Plugin(pwchem.Plugin):
 
         gninaEnvName = cls.getEnvName(GNINA_DIC)
         installer.addCommand(
-            f'conda create -n {gninaEnvName} cudnn=9 cuda-libraries=12 -c nvidia -y',
+            f'conda create -n {gninaEnvName} cudnn=9 cuda-libraries=12 openbabel=3.2.1 -c conda-forge -c nvidia -y',
             'GNINA_ENV_CREATED'
         )
 
@@ -97,17 +97,27 @@ class Plugin(pwchem.Plugin):
         return cls.getVar(GNINA_ACTIVATION_CMD) if cls.getVar(GNINA_ACTIVATION_CMD) else ''
 
     @classmethod
-    def runGnina(cls, protocol, args, cwd=None, popen=False):
+    def runGnina(cls, protocol, args, cwd=None, popen=False, gpuId=None):
         """Run a gnina command inside a protocol step.
         LD_LIBRARY_PATH necessary to make cudnn9 visible
+
+        The GPU is selected with CUDA_VISIBLE_DEVICES, not with gnina's
+        --device: the Torch backend of gnina 1.3.2 ignores that flag and says
+        so ("Torch backend ignores device argument"), which silently sent every
+        job to the first visible card. Note the chosen GPU is renumbered to
+        index 0 inside the process, so --device must not be passed as well.
 
         :param protocol: calling Scipion protocol object
         :param args:     command-line argument string (without 'gnina' prefix)
         :param cwd:      working directory (default: protocol._getExtraPath())
         :param popen:    if True use subprocess.check_call instead of runJob
+        :param gpuId:    CUDA device to expose; None leaves every card visible
         """
+        # 'is not None': GPU 0 is a valid id and must not be treated as unset.
+        gpuStr = f'CUDA_VISIBLE_DEVICES={gpuId} ' if gpuId is not None else ''
         fullProgram = (
             f'{cls.getEnvActivationCommand(GNINA_DIC)} && '
+            f'{gpuStr}'
             f'LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH '
             f'{cls.getGninaBinary()}')
         if not popen:

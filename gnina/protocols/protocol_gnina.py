@@ -38,13 +38,7 @@ from pwchem.objects import SetOfSmallMolecules, SmallMolecule
 from pwchem.utils import getBaseName, getBaseFileName, makeSubsets, runOpenBabel, convertToSdf
 
 from .. import Plugin
-from ..constants import (
-    CNN_SCORING_CHOICES, CNN_SCORING_RESCORE,
-    CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT, CNN_MODEL_SENTINEL,
-    SCORING_CHOICES, SCORING_DEFAULT,
-    SORT_CHOICES,
-    GNINA_OUTPUT_SDF, GNINA_FLEX_PDBQT,
-)
+from ..constants import *
 
 FROM_PROTEIN = 0
 FROM_POCKET = 1
@@ -77,25 +71,37 @@ class ProtGninaDocking(EMProtocol):
     # ------------------------------------------------------------------ #
     #  Form definition                                                     #
     # ------------------------------------------------------------------ #
-    def _defineParams(self, form):
+    def _defineGpuParams(self, form, gpuHelp=None):
+        """Add the hidden GPU params. `gpuHelp` overrides the default help text."""
         form.addHidden(USE_GPU, BooleanParam, default=True,
                        label="Use GPU for execution: ",
-                       help="GNINA can use CUDA GPUs to accelerate CNN scoring. "
-                            "If disabled, gnina runs on CPU (much slower for CNN modes).")
+                       help=gpuHelp or "GNINA can use CUDA GPUs to accelerate CNN scoring. "
+                                       "If disabled, gnina runs on CPU (much slower for CNN modes).")
         form.addHidden(GPU_LIST, StringParam, default='0', label="Choose GPU IDs",
                        help="Comma-separated list of GPU device indices that can be used.")
 
-        # ---- Input ----------------------------------------------------- #
+    def _defineInputParams(self, form, fromReceptorDefault=FROM_POCKET,
+                           fromReceptorHelp=None, ligandHelp=None):
+        """Add the Input section: receptor, ligands and search-space extent.
+
+        `fromReceptorDefault` picks whole-protein or ROI mode as the default;
+        the two help arguments add protocol-specific notes where the meaning of
+        an input differs.
+        """
         form.addSection(label='Input')
         inputGroup = form.addGroup('Input specifications')
-        inputGroup.addParam('fromReceptor', EnumParam, label='Dock on : ', default=FROM_POCKET,
-                            choices=['Whole protein', 'SetOfStructROIs'], display=EnumParam.DISPLAY_HLIST)
+        inputGroup.addParam('fromReceptor', EnumParam, label='Dock on : ',
+                            default=fromReceptorDefault,
+                            choices=['Whole protein', 'SetOfStructROIs'],
+                            display=EnumParam.DISPLAY_HLIST,
+                            **({'help': fromReceptorHelp} if fromReceptorHelp else {}))
         inputGroup.addParam('inputAtomStruct', PointerParam, pointerClass='AtomStruct',
                             label='Receptor structure: ', condition=f'fromReceptor == {FROM_PROTEIN}')
         inputGroup.addParam('inputStructROIs', PointerParam, pointerClass="SetOfStructROIs",
                             label='Input pockets: ', condition=f'fromReceptor == {FROM_POCKET}')
         inputGroup.addParam('inputSmallMolecules', PointerParam, pointerClass='SetOfSmallMolecules',
-                            label='Ligand set: ', allowsNull=False)
+                            label='Ligand set: ', allowsNull=False,
+                            **({'help': ligandHelp} if ligandHelp else {}))
         inputGroup.addParam('pocketRadiusN', FloatParam, label='Grid radius vs ROI radius: ',
                             default=1.2, allowsNull=False, condition=f'fromReceptor == {FROM_POCKET}',
                             help='The size of each StructROI multiplied by this factor is used as the '
@@ -105,11 +111,15 @@ class ProtGninaDocking(EMProtocol):
                             help='Buffer space added on every side of the auto-generated box that wraps '
                                  'the whole receptor.')
 
+    def _defineParams(self, form):
+        self._defineGpuParams(form)
+        self._defineInputParams(form)
+
         # ---- Docking & Scoring ----------------------------------------- #
         form.addSection(label='Docking & Scoring')
         form.addParam('exhaustiveness', IntParam, default=8, label='Exhaustiveness: ',
                       help='Exhaustiveness of the global Monte-Carlo search (roughly proportional to time).')
-        form.addParam('numPoses', IntParam, default=9, label='Number of binding modes: ',
+        form.addParam('numPoses', IntParam, default=10, label='Number of binding modes: ',
                       help='Maximum number of docking poses to generate per ligand (--num_modes).')
         form.addParam('minRmsdFilter', FloatParam, default=1.0, label='Min. RMSD filter (Å): ',
                       expertLevel=LEVEL_ADVANCED,
@@ -229,7 +239,7 @@ class ProtGninaDocking(EMProtocol):
         logFile = os.path.join(outDir, 'gnina.log')
 
         args = self._buildArgs(recFile, ligFile, outFile, logFile, pocket)
-        Plugin.runGnina(self, args, cwd=outDir)
+        Plugin.runGnina(self, args, cwd=outDir, gpuId=self.getGpuId())
 
     def createOutputStep(self):
         """Collect all docked SDF files and build a SetOfSmallMolecules output."""
@@ -254,6 +264,10 @@ class ProtGninaDocking(EMProtocol):
 
             poses = self.splitGninaSDF(sdfFile, outDir, prefix=prefix)
 
+            # With flexible residues the receptor side chains move, so each pose
+            # gets its own receptor built from gnina's --out_flex output
+            poseRecFiles = self._buildFlexReceptors(sdfFile, poses, recFile, recDir)
+
             for poseIdx, poseData in enumerate(poses):
                 srcMol = inputMolsDic.get(poseData['molName'])
                 if srcMol is None:
@@ -268,22 +282,16 @@ class ProtGninaDocking(EMProtocol):
                 newMol.setGridId(gridId)
                 newMol.setMolClass('Gnina')
                 newMol.setDockId(self.getObjId())
-                # With flexible residues the receptor side chains move, so each pose
-                # gets its own receptor built from gnina's --out_flex output.
-                # Each pose records the receptor it was docked against the rigid one otherwise.
-                poseRecFiles = self._buildFlexReceptors(sdfFile, poses, recFile, recDir)
                 newMol.setProteinFile(os.path.relpath(
                     poseRecFiles[poseIdx] if poseRecFiles else recFile))
 
                 # Always set the three attributes, even when gnina did not report
-                # a tag: a Set fixes its column schema from the first item it
-                # stores, so a later item missing one of them would abort the
-                # insert with an AttributeError.
-                newMol._energy = pwobj.Float(
+                # a tag.
+                newMol._gninaEnergy = pwobj.Float(
                     self.getTagValueFromSdf(poseData['poseFile'], 'minimizedAffinity'))
-                newMol._cnnScore = pwobj.Float(
+                newMol._gninaCnnScore = pwobj.Float(
                     self.getTagValueFromSdf(poseData['poseFile'], 'CNNscore'))
-                newMol._cnnAffinity = pwobj.Float(
+                newMol._gninaCnnAffinity = pwobj.Float(
                     self.getTagValueFromSdf(poseData['poseFile'], 'CNNaffinity'))
 
                 outputSet.append(newMol)
@@ -345,11 +353,10 @@ class ProtGninaDocking(EMProtocol):
                 args += f' --flexres {flexRes}'
                 args += f' --out_flex "{os.path.join(os.path.dirname(outFile), GNINA_FLEX_PDBQT)}"'
 
-        # GPU / CPU
-        gpuList = self._getGPUIds()
-        if getattr(self, USE_GPU).get() and gpuList:
-            args += f' --device {gpuList[0]}'
-        else:
+        # GPU / CPU. The device is chosen through CUDA_VISIBLE_DEVICES in
+        # Plugin.runGnina, not with --device: gnina 1.3.2's Torch backend
+        # ignores that flag and warns about it, so passing it selected nothing.
+        if not getattr(self, USE_GPU).get():
             args += ' --no_gpu'
 
         args += f' --cpu {self.exhaustiveness.get()}'
@@ -591,6 +598,17 @@ class ProtGninaDocking(EMProtocol):
             if gp.strip():
                 gpus.append(str(int(gp.strip())))
         return gpus
+
+    def getGpuId(self):
+        """CUDA device to expose to gnina, or None to leave every card visible.
+
+        Returned for CUDA_VISIBLE_DEVICES rather than gnina's --device: the
+        Torch backend ignores that flag, so it never selected anything.
+        """
+        if not getattr(self, USE_GPU).get():
+            return None
+        gpuList = self._getGPUIds()
+        return gpuList[0] if gpuList else None
 
     # ------------------------------------------------------------------ #
     #  Validation                                                          #
