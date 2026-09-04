@@ -195,6 +195,8 @@ class SelectCovalentWarheadWizard(VariableWizard):
         if dlg.values:
             form.setVar(outputParam[0], dlg.values[0].get().split(': ', 1)[1])
 
+# inputs is required by addTarget even when the wizard reads nothing.
 SelectCovalentWarheadWizard().addTarget(protocol=ProtGninaCovalentDocking,
                                         targets=['covalentLigPattern'],
+                                        inputs=[],
                                         outputs=['covalentLigPattern'])

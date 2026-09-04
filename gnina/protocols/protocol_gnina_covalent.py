@@ -24,7 +24,7 @@
 # *
 # **************************************************************************
 
-import os, glob
+import os, glob, math
 
 from pyworkflow.protocol.params import (
     PointerParam, EnumParam, IntParam, FloatParam, BooleanParam,
@@ -499,8 +499,7 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
             # rather than appending it. Taking the last atoms instead put ligand
             # atoms in the receptor, duplicating them at the same coordinates.
             ligAtoms, _ = self._readSdfMol(poseData['poseFile'])
-            recSide = [line for line in atomLines
-                       if not self._matchesLigand(self._pdbqtCoords(line), ligAtoms)]
+            recSide = [line for line in atomLines if not self._isLigandAtom(line, ligAtoms)]
             if not ligAtoms or not recSide or len(recSide) == len(atomLines):
                 print(f'Warning: cannot split the covalent fragment of '
                       f'{poseData["poseFile"]} into ligand and receptor '
@@ -882,14 +881,18 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
                 lines.append(f'CONECT{serial:>5}{chunk}\n')
         return lines
 
-    @staticmethod
-    def _matchesLigand(xyz, ligAtoms, tol=0.1):
-        """True when this fragment atom is one of the pose's own atoms"""
-        if xyz is None:
+    @classmethod
+    def _isLigandAtom(cls, line, ligAtoms):
+        """True when this fragment atom belongs to the pose rather than the receptor"""
+        xyz = cls._pdbqtCoords(line)
+        if xyz is None or not ligAtoms:
             return False
 
-        tol2 = tol ** 2
-        return any(sum((a - b) ** 2 for a, b in zip(xyz, lig[:3])) < tol2 for lig in ligAtoms)
+        nearest = min(math.dist(xyz, lig[:3]) for lig in ligAtoms)
+        # The flex output also carries the ligand's polar hydrogens, which the
+        # united-atom pose SDF has none of, so they match no position: a
+        # hydrogen within bonding distance of the pose is the pose's.
+        return nearest < 0.1 or (nearest < 1.3 and cls._pdbqtElement(line) == 'H')
 
     @staticmethod
     def _pdbqtElement(line):
