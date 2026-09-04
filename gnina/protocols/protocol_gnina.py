@@ -119,7 +119,7 @@ class ProtGninaDocking(EMProtocol):
         form.addSection(label='Docking & Scoring')
         form.addParam('exhaustiveness', IntParam, default=8, label='Exhaustiveness: ',
                       help='Exhaustiveness of the global Monte-Carlo search (roughly proportional to time).')
-        form.addParam('numPoses', IntParam, default=9, label='Number of binding modes: ',
+        form.addParam('numPoses', IntParam, default=10, label='Number of binding modes: ',
                       help='Maximum number of docking poses to generate per ligand (--num_modes).')
         form.addParam('minRmsdFilter', FloatParam, default=1.0, label='Min. RMSD filter (Å): ',
                       expertLevel=LEVEL_ADVANCED,
