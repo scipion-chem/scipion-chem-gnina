@@ -66,7 +66,7 @@ class Plugin(pwchem.Plugin):
 
         gninaEnvName = cls.getEnvName(GNINA_DIC)
         installer.addCommand(
-            f'conda create -n {gninaEnvName} cudnn=9 -c nvidia -y',
+            f'conda create -n {gninaEnvName} cudnn=9 cuda-libraries=12 -c nvidia -y',
             'GNINA_ENV_CREATED'
         )
 
@@ -93,19 +93,13 @@ class Plugin(pwchem.Plugin):
     @classmethod
     def getGninaEnvActivation(cls):
         """Return any activation string needed before calling gnina.
-
-        gnina is a self-contained static binary so no conda env is required.
-        Returns an empty string unless the user overrides GNINA_ACTIVATION_CMD.
         """
         return cls.getVar(GNINA_ACTIVATION_CMD) if cls.getVar(GNINA_ACTIVATION_CMD) else ''
 
     @classmethod
     def runGnina(cls, protocol, args, cwd=None, popen=False):
         """Run a gnina command inside a protocol step.
-
-        The conda env is activated first so that $CONDA_PREFIX is set, then
-        LD_LIBRARY_PATH is prepended with $CONDA_PREFIX/lib to make cudnn9
-        (and any other conda-managed libs) visible to the static binary.
+        LD_LIBRARY_PATH necessary to make cudnn9 visible
 
         :param protocol: calling Scipion protocol object
         :param args:     command-line argument string (without 'gnina' prefix)
@@ -115,8 +109,7 @@ class Plugin(pwchem.Plugin):
         fullProgram = (
             f'{cls.getEnvActivationCommand(GNINA_DIC)} && '
             f'LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH '
-            f'{cls.getGninaBinary()}'
-        )
+            f'{cls.getGninaBinary()}')
         if not popen:
             protocol.runJob(fullProgram, args, env=cls.getEnviron(), cwd=cwd,
                             numberOfThreads=1)

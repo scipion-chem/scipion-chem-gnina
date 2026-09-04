@@ -68,8 +68,7 @@ class TestGninaBase(BaseTest):
 
     @classmethod
     def _runImportSmallMols(cls):
-        # A small set of distinct ligands, shared by all tests, so several
-        # molecules exercise the multi-ligand handling.
+        # A small set of distinct ligands.
         cls.protImportSmallMols = cls.newProtocol(
             ProtChemImportSmallMolecules,
             filesPath=cls.dsLig.getFile('mol2'),
@@ -89,9 +88,7 @@ class TestGninaBase(BaseTest):
     @classmethod
     def _runDefineROIs(cls):
         # Define a structural ROI around the heme (HEM) site of 5ni1 and REMOVE
-        # the HEM HETATM from the structure used for docking (remMol / remove=True),
-        # so ligands dock into the freed heme pocket. The "N) " prefix is the
-        # format the ROI-definition wizard stores in 'inROIs'.
+        # the HEM HETATM from the structure used for docking'.
         cls.protDefROIs = cls.newProtocol(
             ProtDefineStructROIs,
             inputAtomStruct=cls.protPrepRec.outputStructure,
@@ -102,9 +99,6 @@ class TestGninaBase(BaseTest):
         cls.proj.launchProtocol(cls.protDefROIs, wait=True)
         return cls.protDefROIs
 
-    # ------------------------------------------------------------------ #
-    #  GNINA runs (helpers reused by the test classes)                     #
-    # ------------------------------------------------------------------ #
     def _runGninaWholeProtein(self):
         protGnina = self.newProtocol(
             ProtGninaDocking,
