@@ -968,14 +968,6 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
             errors.append('Fixing the warhead position requires an initial warhead position.')
         return errors
 
-    def _warnings(self):
-        warnings = []
-        if not self.covalentOptimizeLig.get():
-            warnings.append('Covalent docking without UFF optimisation of the complex: the bond is '
-                            'formed geometrically, so the junction stays strained and poses usually '
-                            'score much worse (positive affinities are a symptom).')
-        return warnings
-
     # ------------------------------------------------------------------ #
     #  Summary / methods                                                   #
     # ------------------------------------------------------------------ #
