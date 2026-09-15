@@ -33,11 +33,33 @@ import pwchem
 import pyworkflow.utils as pwutils
 from .bibtex import _bibtexStr
 
-from .constants import *
+from .constants import (ALPHA_VERSION, GNINA_ACTIVATION_CMD, GNINA_BINARY_NAME,
+                        GNINA_DIC, GNINA_HOME)
 
 _logo = 'icon.png'
 _references = ['McNutt2021', 'McNutt2025']
 __version__ = ALPHA_VERSION
+
+# Shell fragment that locates Open Babel's data directory and leaves it in
+# $BABEL_DIR (empty if there is none). The released gnina binary is statically
+# linked against Open Babel but ships none of its data files, so the force
+# field it needs for --covalent_optimize_lig, UFF.prm, is looked up at run time
+# under $BABEL_DATADIR. With that unset the binary reports "Cannot open UFF.prm"
+# on stderr and then carries on without optimising anything, which is how
+# covalent poses come out strained and score positive affinities.
+#
+# The conda env of the plugin is searched first, then its sibling envs: the
+# pwchem env always carries Open Babel, and UFF.prm is a plain parameter table
+# that does not change between the 3.x releases.
+#
+# The directory is exported rather than passed as an assignment prefix on the
+# gnina command: bash decides whether a word is an assignment before expanding
+# it, so a prefix built by expansion is run as a command name instead.
+BABEL_DATADIR_LOOKUP = (
+    'BABEL_DIR=$(ls -d "$CONDA_PREFIX"/share/openbabel/*/ 2>/dev/null | tail -1); '
+    '[ -n "$BABEL_DIR" ] || '
+    'BABEL_DIR=$(ls -d "$CONDA_PREFIX"/../*/share/openbabel/*/ 2>/dev/null | tail -1); '
+    '[ -n "$BABEL_DIR" ] && export BABEL_DATADIR="$BABEL_DIR"; ')
 
 
 class Plugin(pwchem.Plugin):
@@ -45,6 +67,7 @@ class Plugin(pwchem.Plugin):
 
     _homeVar = GNINA_HOME
     _pathVars = [GNINA_HOME]
+    _babelDataDir = None
 
     @classmethod
     def defineBinaries(cls, env):
@@ -66,8 +89,18 @@ class Plugin(pwchem.Plugin):
 
         gninaEnvName = cls.getEnvName(GNINA_DIC)
         installer.addCommand(
-            f'conda create -n {gninaEnvName} cudnn=9 cuda-libraries=12 openbabel=3.2.1 -c conda-forge -c nvidia -y',
+            f'conda create -n {gninaEnvName} cudnn=9 cuda-libraries=12 -c nvidia -y',
             'GNINA_ENV_CREATED'
+        )
+
+        # Open Babel is installed for its data files, not for its library: the
+        # gnina binary carries its own copy of the code but none of the .prm
+        # tables, and without UFF.prm --covalent_optimize_lig does nothing.
+        # Kept as a command of its own so an existing installation can pick it
+        # up, and so the conda-forge channel cannot disturb the env creation.
+        installer.addCommand(
+            f'conda install -n {gninaEnvName} openbabel -c conda-forge -y',
+            'GNINA_BABEL_DATA'
         )
 
         installer.addCommand(
@@ -99,7 +132,10 @@ class Plugin(pwchem.Plugin):
     @classmethod
     def runGnina(cls, protocol, args, cwd=None, popen=False, gpuId=None):
         """Run a gnina command inside a protocol step.
-        LD_LIBRARY_PATH necessary to make cudnn9 visible
+
+        The conda env is activated first so that $CONDA_PREFIX is set, then
+        LD_LIBRARY_PATH is prepended with $CONDA_PREFIX/lib to make cudnn9
+        (and any other conda-managed libs) visible to the static binary.
 
         The GPU is selected with CUDA_VISIBLE_DEVICES, not with gnina's
         --device: the Torch backend of gnina 1.3.2 ignores that flag and says
@@ -117,6 +153,7 @@ class Plugin(pwchem.Plugin):
         gpuStr = f'CUDA_VISIBLE_DEVICES={gpuId} ' if gpuId is not None else ''
         fullProgram = (
             f'{cls.getEnvActivationCommand(GNINA_DIC)} && '
+            f'{BABEL_DATADIR_LOOKUP}'
             f'{gpuStr}'
             f'LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH '
             f'{cls.getGninaBinary()}')
@@ -126,6 +163,34 @@ class Plugin(pwchem.Plugin):
         else:
             subprocess.check_call(f'{fullProgram} {args}', cwd=cwd, shell=True,
                                   executable='/bin/bash')
+
+    @classmethod
+    def getBabelDataDir(cls):
+        """Open Babel data directory holding UFF.prm, or '' if there is none.
+
+        Resolved the same way as in runGnina, but from Python and checked for
+        the file itself, so a protocol can refuse to start an optimisation that
+        would silently do nothing. Cached: it costs a conda activation (~2 s).
+        """
+        if cls._babelDataDir is None:
+            cmd = (f'{cls.getEnvActivationCommand(GNINA_DIC)} && '
+                   f'{BABEL_DATADIR_LOOKUP} echo "GNINA_BABEL_DIR=$BABEL_DIR"')
+            babelDir = ''
+            try:
+                proc = subprocess.run(cmd, shell=True, executable='/bin/bash',
+                                      capture_output=True, text=True, timeout=120)
+                for line in proc.stdout.splitlines():
+                    # Marked so that whatever conda prints on activation cannot
+                    # be mistaken for the answer.
+                    if line.startswith('GNINA_BABEL_DIR='):
+                        babelDir = line.split('=', 1)[1].strip()
+            except (OSError, subprocess.SubprocessError):
+                babelDir = ''
+
+            if babelDir and not os.path.isfile(os.path.join(babelDir, 'UFF.prm')):
+                babelDir = ''
+            cls._babelDataDir = babelDir
+        return cls._babelDataDir
 
     @classmethod
     def getEnviron(cls):

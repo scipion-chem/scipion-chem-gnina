@@ -36,7 +36,9 @@ import pyworkflow.object as pwobj
 from pwchem.objects import SetOfSmallMolecules
 from pwchem.utils import getBaseName, parseAtomStruct, runOpenBabel
 
-from ..constants import *
+from ..constants import (COVALENT_BOND_ORDER_CHOICES, COVALENT_CNN_SCORING,
+                         COVALENT_SORT_ORDER, COVALENT_WARHEAD_EXAMPLES, GNINA_FLEX_PDBQT,
+                         GNINA_OUTPUT_SDF, SCORING_CHOICES, SCORING_DEFAULT)
 from .protocol_gnina import ProtGninaDocking, FROM_PROTEIN, CIFext
 
 # Per-pose receptor+ligand complexes, with the covalent bond as a CONECT record
@@ -98,9 +100,9 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
                                        for name, smarts in COVALENT_WARHEAD_EXAMPLES))
         form.addParam('covalentOptimizeLig', BooleanParam, label='Optimize covalent complex: ',
                       default=True,
-                      help='Relax the ligand with UFF once bonded (--covalent_optimize_lig).\n\n'
+                      help='Relax the ligand with UFF once bonded.\n\n'
                            'Recommended: the bond is formed geometrically, so without this step the '
-                           'junction stays strained and poses score badly (positive affinities).')
+                           'junction stays strained and poses score badly.')
         form.addParam('covalentBondOrder', EnumParam, choices=COVALENT_BOND_ORDER_CHOICES,
                       label='Covalent bond order: ', default=0, expertLevel=LEVEL_ADVANCED,
                       help='Bond order of the new receptor-ligand bond.\n\n'
@@ -225,41 +227,24 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
         if dropped and not kept:
             # Say so, rather than define an empty output that reads as a
             # docking which found nothing.
-            raise Exception(
+            raise RuntimeError(
                 f'None of the {len(dropped)} input molecules matches the warhead SMARTS '
                 f'{self.covalentLigPattern.get()}, so there was nothing to dock.')
 
         recDir = self._getPath('outputReceptors')
-        sdfFiles = sorted(glob.glob(self._getExtraPath('*', 'subset_*', GNINA_OUTPUT_SDF)))
-        for sdfFile in sdfFiles:
+        for sdfFile in sorted(glob.glob(self._getExtraPath('*', 'subset_*', GNINA_OUTPUT_SDF))):
             pocketId = self._pocketIdFromPath(sdfFile)
             gridId = pocketId if pocketId is not None else 1
-            prefix = f'g{gridId}_'
 
-            poses = self.splitGninaSDF(sdfFile, outDir, prefix=prefix)
-
+            poses = self.splitGninaSDF(sdfFile, outDir, prefix=f'g{gridId}_')
             # Per-pose receptors, and the complexes along the way.
             poseRecFiles = self._buildFlexReceptors(sdfFile, poses, recFile, recDir)
 
             for poseIdx, poseData in enumerate(poses):
-                srcMol = inputMolsDic.get(poseData['molName'])
-                if srcMol is None:
-                    print(f"Warning: docked molecule '{poseData['molName']}' not found "
-                          f"among input ligands; skipping pose.")
-                    continue
-
-                newMol = self._makePoseMol(
-                    srcMol, poseData, gridId,
-                    poseRecFiles[poseIdx] if poseRecFiles else recFile)
-
-                # Receptor + pose in one PDB, the bond as a CONECT record. Set
-                # on every pose even when missing: a Set fixes its columns from
-                # the first item, so a later item without it aborts the insert.
-                complexFile = self._complexFilePath(poseData['poseFile'])
-                newMol.covalentPoseFile = pwobj.String(
-                    os.path.relpath(complexFile) if os.path.exists(complexFile) else None)
-
-                outputSet.append(newMol)
+                poseRec = poseRecFiles[poseIdx] if poseRecFiles else recFile
+                newMol = self._makeCovalentMol(inputMolsDic, poseData, gridId, poseRec)
+                if newMol is not None:
+                    outputSet.append(newMol)
 
         outputSet.updateMolClass()
         outputSet.setProteinFile(os.path.relpath(recFile))
@@ -273,6 +258,24 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
             print(f'{len(dropped)} molecule(s) were not docked, having no warhead matching '
                   f'{self.covalentLigPattern.get()}; named in '
                   f'{os.path.basename(self._getNotDockedFile())}')
+
+    def _makeCovalentMol(self, inputMolsDic, poseData, gridId, poseRecFile):
+        """The output molecule of one pose, None when its input is not found"""
+        srcMol = inputMolsDic.get(poseData['molName'])
+        if srcMol is None:
+            print(f"Warning: docked molecule '{poseData['molName']}' not found "
+                  f"among input ligands; skipping pose.")
+            return None
+
+        newMol = self._makePoseMol(srcMol, poseData, gridId, poseRecFile)
+
+        # Receptor + pose in one PDB, the bond as a CONECT record. Set on every
+        # pose even when missing: a Set fixes its columns from the first item,
+        # so a later item without it aborts the insert.
+        complexFile = self._complexFilePath(poseData['poseFile'])
+        newMol.covalentPoseFile = pwobj.String(
+            os.path.relpath(complexFile) if os.path.exists(complexFile) else None)
+        return newMol
 
     def _getNotDockedFile(self):
         return self._getExtraPath('notDocked.txt')
@@ -366,43 +369,11 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
         makePath(recDir)
         recFiles = []
         for poseData, atomLines in zip(poses, groups):
-            # Split by position, not by count: gnina writes the fragment in its
-            # own order, which interleaves the residue among the ligand atoms
-            # rather than appending it. Taking the last atoms instead put ligand
-            # atoms in the receptor, duplicating them at the same coordinates.
-            ligAtoms, _ = self._readSdfMol(poseData['poseFile'])
-            recSide = [line for line in atomLines if not self._isLigandAtom(line, ligAtoms)]
-            if not ligAtoms or not recSide or len(recSide) == len(atomLines):
-                print(f'Warning: cannot split the covalent fragment of '
-                      f'{poseData["poseFile"]} into ligand and receptor '
-                      f'({len(atomLines) - len(recSide)} of {len(atomLines)} fragment atoms '
-                      f'matched the pose); poses will reference the rigid receptor.')
+            recSide = self._receptorSideAtoms(poseData, atomLines)
+            if recSide is None:
                 return None
 
-            lastSerial = max((self._pdbqtSerial(l) for l in rigidLines), default=0)
-            appended = []
-            for line in recSide:
-                xyz = self._pdbqtCoords(line)
-                if xyz is None or self._nearestAtom(xyz, rigidLines, 0.05)[1] is not None:
-                    continue
-                if self._pdbqtElement(line) != 'H':
-                    print(f'Warning: {line[12:16].strip()} of '
-                          f'{getBaseName(poseData["poseFile"])} is not at its rigid-receptor '
-                          f'position; gnina moved the residue and the per-pose receptor will '
-                          f'not show it.')
-
-                lastSerial += 1
-                line = f'{line[:6]}{lastSerial:>5}{line[11:]}'
-                # gnina labels them 'UNK 1' with no chain, which would make a
-                # residue of their own and break the chain. Take the identity of
-                # the nearest receptor atom: a polar hydrogen is never far from
-                # the atom it protonates.
-                host = self._nearestAtom(xyz, rigidLines, 2.0)[1]
-                if host is not None:
-                    line = f'{line[:17]}{host[17:27]}{line[27:]}'
-                appended.append(line)
-
-            recAtomLines = list(rigidLines) + appended
+            recAtomLines = rigidLines + self._missingHydrogens(recSide, rigidLines, poseData)
             outRec = os.path.join(recDir, f'{getBaseName(poseData["poseFile"])}_rec.pdbqt')
             with open(outRec, 'w') as fOut:
                 fOut.writelines(recAtomLines)
@@ -410,6 +381,49 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
 
             self._writeCovalentComplex(poseData, recAtomLines)
         return recFiles
+
+    def _receptorSideAtoms(self, poseData, atomLines):
+        """The receptor atoms of a covalent fragment, None if it cannot be split."""
+        ligAtoms, _ = self._readSdfMol(poseData['poseFile'])
+        recSide = [line for line in atomLines if not self._isLigandAtom(line, ligAtoms)]
+        if not ligAtoms or not recSide or len(recSide) == len(atomLines):
+            print(f'Warning: cannot split the covalent fragment of '
+                  f'{poseData["poseFile"]} into ligand and receptor '
+                  f'({len(atomLines) - len(recSide)} of {len(atomLines)} fragment atoms '
+                  f'matched the pose); poses will reference the rigid receptor.')
+            return None
+        return recSide
+
+    def _missingHydrogens(self, recSide, rigidLines, poseData):
+        """Receptor-side atoms that the rigid receptor does not already have.
+
+        Covalent runs pass no --flexres, so the residue cannot move and every
+        receptor-side atom is already in the rigid file at the same coordinates
+        (0.0000 A over the 27 poses measured). Only the residue's polar
+        hydrogens are missing, the '-xr' receptor having none.
+        """
+        lastSerial = max((self._pdbqtSerial(l) for l in rigidLines), default=0)
+        appended = []
+        for line in recSide:
+            xyz = self._pdbqtCoords(line)
+            if xyz is None or self._nearestAtom(xyz, rigidLines, 0.05)[1] is not None:
+                continue
+            if self._pdbqtElement(line) != 'H':
+                print(f'Warning: {line[12:16].strip()} of '
+                      f'{getBaseName(poseData["poseFile"])} is not at its rigid-receptor '
+                      f'position; gnina moved the residue and the per-pose receptor will '
+                      f'not show it.')
+
+            lastSerial += 1
+            line = f'{line[:6]}{lastSerial:>5}{line[11:]}'
+            # gnina labels them 'UNK 1' with no chain, which would make a residue
+            # of their own and break the chain. Take the identity of the nearest
+            # receptor atom: a polar hydrogen is never far from what it protonates.
+            host = self._nearestAtom(xyz, rigidLines, 2.0)[1]
+            if host is not None:
+                line = f'{line[:17]}{host[17:27]}{line[27:]}'
+            appended.append(line)
+        return appended
 
     @classmethod
     def _nearestAtom(cls, xyz, lines, maxDist):
@@ -426,14 +440,6 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
             if d2 < bestD2:
                 best, bestD2 = (idx, line), d2
         return best
-
-    @staticmethod
-    def _pdbqtSerial(line):
-        """Atom serial of a PDBQT line, 0 for anything else"""
-        try:
-            return int(line[6:11])
-        except ValueError:
-            return 0
 
     # ------------------------------------------------------------------ #
     #  Covalent complex files                                              #
@@ -552,31 +558,34 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
         recFile = self.getOriginalReceptorFile()
         if recFile is None:
             return None
+        recFile = os.path.abspath(recFile)
 
         if recFile.endswith(CIFext):
-            structure = parseAtomStruct(os.path.abspath(recFile))
-            if structure is None:
-                return None
-            for model in structure:
-                for ch in model:
-                    if chain and ch.get_id() != chain:
-                        continue
-                    for res in ch:
-                        if str(res.get_id()[1]) != resNum:
-                            continue
-                        for atom in res:
-                            if atom.get_id() == atomName:
-                                return tuple(float(c) for c in atom.get_coord())
-            return None
+            return self._cifAtomCoords(recFile, chain, resNum, atomName)
 
         # PDB and PDBQT share the ATOM record columns
-        for line in open(os.path.abspath(recFile)):
-            if not line.startswith(('ATOM', 'HETATM')):
-                continue
-            name, lineChain, lineRes = self._pdbqtAtomKey(line)
-            if name == atomName and lineRes == resNum and (lineChain == chain or not chain):
+        for line in open(recFile):
+            if line.startswith(('ATOM', 'HETATM')) and \
+                    self._atomLineMatches(line, chain, resNum, atomName):
                 return self._pdbqtCoords(line)
         return None
+
+    @staticmethod
+    def _cifAtomCoords(recFile, chain, resNum, atomName):
+        """The same lookup on an mmCIF, walked with Biopython"""
+        structure = parseAtomStruct(recFile)
+        for atom in structure.get_atoms() if structure else []:
+            res = atom.get_parent()
+            if atom.get_id() == atomName and str(res.get_id()[1]) == resNum \
+                    and (not chain or res.get_parent().get_id() == chain):
+                return tuple(float(c) for c in atom.get_coord())
+        return None
+
+    @classmethod
+    def _atomLineMatches(cls, line, chain, resNum, atomName):
+        """True if a PDB/PDBQT atom line is that atom of that residue"""
+        name, lineChain, lineRes = cls._pdbqtAtomKey(line)
+        return name == atomName and lineRes == resNum and (not chain or lineChain == chain)
 
     @classmethod
     def _pdbqtAtomAt(cls, pdbqtFile, xyz, tol=0.05):
@@ -600,11 +609,8 @@ class ProtGninaCovalentDocking(ProtGninaDocking):
         spec = self.getCovalentRecAtom()
         if spec.count(':') == 2:
             chain, resNum, atomName = [s.strip() for s in spec.split(':')]
-            for idx, line in enumerate(recAtoms):
-                name, lineChain, lineRes = self._pdbqtAtomKey(line)
-                if name == atomName and lineRes == resNum and (lineChain == chain or not chain):
-                    return idx
-            return None
+            return next((idx for idx, line in enumerate(recAtoms)
+                         if self._atomLineMatches(line, chain, resNum, atomName)), None)
 
         if spec.count(',') == 2:
             try:

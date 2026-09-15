@@ -30,10 +30,10 @@ from pyworkflow.gui.tree import ListTreeProviderString
 from pyworkflow.gui import dialog
 from pyworkflow.object import String
 
-from pwem.wizards import EmWizard, VariableWizard
+from pwem.wizards import VariableWizard
 from pwem.convert import AtomicStructHandler
 from pwchem.utils import parseAtomStruct
-from pwchem.wizards import (SelectChainWizard, SelectChainWizardQT, SelectResidueWizardQT,
+from pwchem.wizards import (SelectChainWizardQT, SelectResidueWizardQT,
                             SelectAtomWizardQT)
 from gnina.protocols import ProtGninaDocking, ProtGninaCovalentDocking
 from gnina.constants import COVALENT_WARHEAD_EXAMPLES
@@ -62,7 +62,7 @@ class SelectSpecificResiduesWizardQT(SelectResidueWizardQT):
             try:
                 struct = json.loads(chainStr)
                 chain_id = struct.get("chain", "A").upper().strip()
-            except Exception:
+            except (TypeError, ValueError, AttributeError):
                 chain_id = "A"
 
         # 2. Fetch the residues using your existing underlying logic (including PDBQT conversions)

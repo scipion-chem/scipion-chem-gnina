@@ -306,7 +306,7 @@ class ProtGninaScore(ProtGninaDocking):
         return args
 
     # ------------------------------------------------------------------ #
-    #  SDF helpers                                                          #
+    #  UTILS                                                             #
     # ------------------------------------------------------------------ #
     def _poseBody(self, poseFile):
         """Return the molblock of a pose (atoms/bonds up to 'M  END'), WITHOUT
@@ -354,27 +354,9 @@ class ProtGninaScore(ProtGninaDocking):
     def _getScoresFile(self, it):
         return self._getExtraPath(f'scores_{it}.json')
 
-    # ------------------------------------------------------------------ #
-    #  Receptor source (override: read it from the docked input set)       #
-    # ------------------------------------------------------------------ #
-    def getOriginalReceptorFile(self, getLink=True):
-        recLink = self.getReceptorLink()
-        if recLink is None or not getLink:
-            recFile = self.inputSmallMolecules.get().getProteinFile()
-            if not recFile:
-                print('No protein file found in the input docked set')
-                return None
-
-            if getLink:
-                recDir = self._getExtraPath('originalReceptor')
-                if not os.path.exists(recDir):
-                    os.mkdir(recDir)
-                recLink = os.path.join(recDir, os.path.basename(recFile))
-                if not os.path.exists(recLink):
-                    os.link(recFile, recLink)
-            else:
-                recLink = recFile
-        return recLink
+    def _inputReceptorFile(self):
+        """Here the receptor is the one the input poses were docked against"""
+        return self.inputSmallMolecules.get().getProteinFile()
 
     # ------------------------------------------------------------------ #
     #  Validation                                                          #

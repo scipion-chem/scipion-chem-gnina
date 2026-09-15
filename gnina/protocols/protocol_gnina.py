@@ -38,7 +38,9 @@ from pwchem.objects import SetOfSmallMolecules, SmallMolecule
 from pwchem.utils import getBaseName, getBaseFileName, makeSubsets, runOpenBabel, convertToSdf
 
 from .. import Plugin
-from ..constants import *
+from ..constants import (CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT, CNN_MODEL_SENTINEL,
+                         CNN_SCORING_CHOICES, CNN_SCORING_RESCORE, GNINA_FLEX_PDBQT,
+                         GNINA_OUTPUT_SDF, SCORING_CHOICES, SCORING_DEFAULT, SORT_CHOICES)
 
 FROM_PROTEIN = 0
 FROM_POCKET = 1
@@ -466,41 +468,47 @@ class ProtGninaDocking(EMProtocol):
         makePath(recDir)
         recFiles = []
         for poseData, atomLines in zip(poses, groups):
-            # (chain, resNum, atomName) -> moved coordinate columns
-            movedDic = {}
-            for line in atomLines:
-                movedDic[self._pdbqtAtomKey(line)] = line[30:54]
-
             # One single-structure receptor file per pose (no MODEL blocks).
             outRec = os.path.join(recDir, f'{getBaseName(poseData["poseFile"])}_rec.pdbqt')
-            used, kept, lastSerial = set(), [], 0
-            for line in open(rigidRecFile):
-                if line.startswith(('ATOM', 'HETATM')):
-                    atomKey = self._pdbqtAtomKey(line)
-                    newCoords = movedDic.get(atomKey)
-                    if newCoords is not None:
-                        line = line[:30] + newCoords + line[54:]
-                        used.add(atomKey)
-                    try:
-                        lastSerial = max(lastSerial, int(line[6:11]))
-                    except ValueError:
-                        pass
-                kept.append(line)
-
-            # gnina protonates the flexible side chains, so the moved residue can
-            # carry polar hydrogens absent from the rigid receptor. Append them
-            # (renumbered) instead of dropping them, or the side chain would come
-            # out incomplete.
-            extra = []
-            for line in atomLines:
-                if self._pdbqtAtomKey(line) not in used:
-                    lastSerial += 1
-                    extra.append(f'{line[:6]}{lastSerial:>5}{line[11:]}')
-
             with open(outRec, 'w') as fOut:
-                fOut.writelines(kept + extra)
+                fOut.writelines(self._applyMovedSideChains(rigidRecFile, atomLines))
             recFiles.append(os.path.abspath(outRec))
         return recFiles
+
+    @classmethod
+    def _applyMovedSideChains(cls, rigidRecFile, atomLines):
+        """The rigid receptor with the moved side chains substituted in.
+
+        gnina protonates the flexible side chains, so a moved residue can carry
+        polar hydrogens absent from the rigid receptor. Those are appended
+        (renumbered) instead of dropped, or the side chain comes out incomplete.
+        """
+        # (atom name, chain, residue number) -> moved coordinate columns
+        moved = {cls._pdbqtAtomKey(line): line[30:54] for line in atomLines}
+        used, kept, lastSerial = set(), [], 0
+        for line in open(rigidRecFile):
+            if line.startswith(('ATOM', 'HETATM')):
+                atomKey = cls._pdbqtAtomKey(line)
+                newCoords = moved.get(atomKey)
+                if newCoords is not None:
+                    line = line[:30] + newCoords + line[54:]
+                    used.add(atomKey)
+                lastSerial = max(lastSerial, cls._pdbqtSerial(line))
+            kept.append(line)
+
+        for line in atomLines:
+            if cls._pdbqtAtomKey(line) not in used:
+                lastSerial += 1
+                kept.append(f'{line[:6]}{lastSerial:>5}{line[11:]}')
+        return kept
+
+    @staticmethod
+    def _pdbqtSerial(line):
+        """Atom serial of a PDBQT line, 0 for anything else"""
+        try:
+            return int(line[6:11])
+        except ValueError:
+            return 0
 
     @staticmethod
     def _pdbqtAtomKey(line):
@@ -540,9 +548,6 @@ class ProtGninaDocking(EMProtocol):
                 break
         return '\n'.join(body).rstrip()
 
-    # ------------------------------------------------------------------ #
-    #  Path helpers                                                        #
-    # ------------------------------------------------------------------ #
     def _getSubsetLigandFile(self, subsetId):
         return self._getExtraPath(f'ligands_subset_{subsetId}.sdf')
 
@@ -551,31 +556,37 @@ class ProtGninaDocking(EMProtocol):
             return os.path.abspath(self._getExtraPath('whole_receptor', f'subset_{subsetId}'))
         return os.path.abspath(self._getExtraPath(f'pocket_{pocket.getObjId()}', f'subset_{subsetId}'))
 
-    # ------------------------------------------------------------------ #
-    #  Receptor helpers                                                    #
-    # ------------------------------------------------------------------ #
     def getOriginalReceptorFile(self, getLink=True):
+        """The receptor file, by default the copy kept inside the protocol"""
         recLink = self.getReceptorLink()
-        if recLink is None or not getLink:
-            if hasattr(self, 'inputAtomStruct') and self.inputAtomStruct.get() and \
-                    (not hasattr(self, 'fromReceptor') or self.fromReceptor.get() == FROM_PROTEIN):
-                recFile = self.inputAtomStruct.get().getFileName()
-            elif hasattr(self, 'inputStructROIs') and self.inputStructROIs.get() and \
-                    (not hasattr(self, 'fromReceptor') or self.fromReceptor.get() == FROM_POCKET):
-                recFile = self.inputStructROIs.get().getProteinFile()
-            else:
-                print('No original receptor file found')
-                return None
+        if recLink is not None and getLink:
+            return recLink
 
-            if getLink:
-                recDir = self._getExtraPath('originalReceptor')
-                if not os.path.exists(recDir):
-                    os.mkdir(recDir)
-                recLink = os.path.join(recDir, getBaseFileName(recFile))
-                if not os.path.exists(recLink):
-                    os.link(recFile, recLink)
-            else:
-                recLink = recFile
+        recFile = self._inputReceptorFile()
+        if not recFile:
+            print('No original receptor file found')
+            return None
+        return self._linkReceptor(recFile) if getLink else recFile
+
+    def _inputReceptorFile(self):
+        """The receptor as the form gives it: whole protein or the ROIs' one.
+        Subclasses taking it from somewhere else override this alone."""
+        fromRec = self.fromReceptor.get() if hasattr(self, 'fromReceptor') else None
+        if hasattr(self, 'inputAtomStruct') and self.inputAtomStruct.get() and \
+                fromRec in (None, FROM_PROTEIN):
+            return self.inputAtomStruct.get().getFileName()
+        if hasattr(self, 'inputStructROIs') and self.inputStructROIs.get() and \
+                fromRec in (None, FROM_POCKET):
+            return self.inputStructROIs.get().getProteinFile()
+        return None
+
+    def _linkReceptor(self, recFile):
+        """Hard link of the receptor inside the protocol directory"""
+        recDir = self._getExtraPath('originalReceptor')
+        os.makedirs(recDir, exist_ok=True)
+        recLink = os.path.join(recDir, getBaseFileName(recFile))
+        if not os.path.exists(recLink):
+            os.link(recFile, recLink)
         return recLink
 
     def getReceptorLink(self):
