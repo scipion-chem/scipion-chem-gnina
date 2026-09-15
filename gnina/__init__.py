@@ -75,11 +75,6 @@ class Plugin(pwchem.Plugin):
         )
 
         installer.addCommand(
-            f'conda install -n {gninaEnvName} cuda-nvtx=12 -c nvidia -y',
-            'GNINA_NVTX_INSTALLED'
-        )
-
-        installer.addCommand(
             f'wget -O {GNINA_BINARY_NAME} {download_url} && '
             f'chmod +x {GNINA_BINARY_NAME}',
             'GNINA_BINARY_READY'
