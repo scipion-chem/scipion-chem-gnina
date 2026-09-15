@@ -275,32 +275,39 @@ class ProtGninaDocking(EMProtocol):
                           f"among input ligands; skipping pose.")
                     continue
 
-                newMol = SmallMolecule()
-                newMol.copy(srcMol, copyId=False)
-                newMol.setPoseFile(os.path.relpath(poseData['poseFile']))
-                newMol.setPoseId(poseData['mode'])
-                newMol.setGridId(gridId)
-                newMol.setMolClass('Gnina')
-                newMol.setDockId(self.getObjId())
-                newMol.setProteinFile(os.path.relpath(
+                outputSet.append(self._makePoseMol(
+                    srcMol, poseData, gridId,
                     poseRecFiles[poseIdx] if poseRecFiles else recFile))
-
-                # Always set the three attributes, even when gnina did not report
-                # a tag.
-                newMol._gninaEnergy = pwobj.Float(
-                    self.getTagValueFromSdf(poseData['poseFile'], 'minimizedAffinity'))
-                newMol._gninaCnnScore = pwobj.Float(
-                    self.getTagValueFromSdf(poseData['poseFile'], 'CNNscore'))
-                newMol._gninaCnnAffinity = pwobj.Float(
-                    self.getTagValueFromSdf(poseData['poseFile'], 'CNNaffinity'))
-
-                outputSet.append(newMol)
 
         outputSet.updateMolClass()
         outputSet.setProteinFile(os.path.relpath(recFile))
         outputSet.setDocked(True)
         self._defineOutputs(outputSmallMolecules=outputSet)
         self._defineSourceRelation(self.inputSmallMolecules, outputSet)
+
+    def _makePoseMol(self, srcMol, poseData, gridId, protFile):
+        """One output molecule for a pose, with its receptor and gnina scores.
+
+        The three scores are set even when gnina reported no tag: a Set fixes
+        its columns from the first item, so a later item missing one would
+        abort the insert.
+        """
+        newMol = SmallMolecule()
+        newMol.copy(srcMol, copyId=False)
+        newMol.setPoseFile(os.path.relpath(poseData['poseFile']))
+        newMol.setPoseId(poseData['mode'])
+        newMol.setGridId(gridId)
+        newMol.setMolClass('Gnina')
+        newMol.setDockId(self.getObjId())
+        newMol.setProteinFile(os.path.relpath(protFile))
+
+        newMol._gninaEnergy = pwobj.Float(
+            self.getTagValueFromSdf(poseData['poseFile'], 'minimizedAffinity'))
+        newMol._gninaCnnScore = pwobj.Float(
+            self.getTagValueFromSdf(poseData['poseFile'], 'CNNscore'))
+        newMol._gninaCnnAffinity = pwobj.Float(
+            self.getTagValueFromSdf(poseData['poseFile'], 'CNNaffinity'))
+        return newMol
 
     # ------------------------------------------------------------------ #
     #  Argument building                                                   #
@@ -309,15 +316,7 @@ class ProtGninaDocking(EMProtocol):
         """Assemble the gnina command-line argument string."""
         args = f'-r "{recFile}" -l "{ligFile}" -o "{outFile}" --log "{logFile}"'
 
-        # Search space
-        if self.fromReceptor.get() == FROM_PROTEIN:
-            args += f' --autobox_ligand "{recFile}" --autobox_add {self.autoboxAdd.get()}'
-        elif pocket is not None:
-            minMaxCoords = pocket.getLimits()
-            xCenter, yCenter, zCenter = pocket.calculateMassCenter()
-            diams = [(mm[1] - mm[0]) * self.pocketRadiusN.get() for mm in minMaxCoords]
-            args += f' --center_x {xCenter} --center_y {yCenter} --center_z {zCenter}'
-            args += f' --size_x {diams[0]} --size_y {diams[1]} --size_z {diams[2]}'
+        args += self._buildSearchSpaceArgs(recFile, pocket)
 
         # CNN scoring + model. The first CNN_MODEL choice is a sentinel: gnina's
         # default ensemble has no --cnn name, so it is reached by omitting the flag.
@@ -353,14 +352,31 @@ class ProtGninaDocking(EMProtocol):
                 args += f' --flexres {flexRes}'
                 args += f' --out_flex "{os.path.join(os.path.dirname(outFile), GNINA_FLEX_PDBQT)}"'
 
-        # GPU / CPU. The device is chosen through CUDA_VISIBLE_DEVICES in
-        # Plugin.runGnina, not with --device: gnina 1.3.2's Torch backend
-        # ignores that flag and warns about it, so passing it selected nothing.
-        if not getattr(self, USE_GPU).get():
-            args += ' --no_gpu'
-
-        args += f' --cpu {self.exhaustiveness.get()}'
+        args += self._buildDeviceArgs()
         return args
+
+    def _buildSearchSpaceArgs(self, recFile, pocket=None):
+        """Box arguments: the whole receptor autoboxed, or one ROI"""
+        if self.fromReceptor.get() == FROM_PROTEIN:
+            return f' --autobox_ligand "{recFile}" --autobox_add {self.autoboxAdd.get()}'
+        if pocket is None:
+            return ''
+
+        minMaxCoords = pocket.getLimits()
+        xCenter, yCenter, zCenter = pocket.calculateMassCenter()
+        diams = [(mm[1] - mm[0]) * self.pocketRadiusN.get() for mm in minMaxCoords]
+        return (f' --center_x {xCenter} --center_y {yCenter} --center_z {zCenter}'
+                f' --size_x {diams[0]} --size_y {diams[1]} --size_z {diams[2]}')
+
+    def _buildDeviceArgs(self):
+        """GPU/CPU arguments.
+
+        The device itself is chosen through CUDA_VISIBLE_DEVICES in
+        Plugin.runGnina, not with --device: gnina 1.3.2's Torch backend ignores
+        that flag and warns about it, so passing it selected nothing.
+        """
+        gpuArg = '' if getattr(self, USE_GPU).get() else ' --no_gpu'
+        return f'{gpuArg} --cpu {self.exhaustiveness.get()}'
 
     # ------------------------------------------------------------------ #
     #  Output parsing                                                      #
@@ -378,7 +394,7 @@ class ProtGninaDocking(EMProtocol):
         poses, molCounts = [], {}
         for globalIdx, block in enumerate(rawBlocks):
             lines = block.splitlines()
-            molName = lines[0].strip() if lines else f'mol_{globalIdx}'
+            molName = self._poseMolName(lines[0].strip() if lines else f'mol_{globalIdx}')
 
             molCounts[molName] = molCounts.get(molName, 0) + 1
             mode = molCounts[molName]
@@ -390,6 +406,28 @@ class ProtGninaDocking(EMProtocol):
             poses.append({'molName': molName, 'mode': mode,
                           'poseFile': os.path.abspath(poseFile)})
         return poses
+
+    @staticmethod
+    def _poseMolName(molName):
+        """Molecule name of a pose, as the output SDF titles it"""
+        return molName
+
+    @staticmethod
+    def _readModelGroups(flexFile):
+        """Atom lines of each MODEL of a PDBQT, in file order"""
+        groups, curId, curAtoms = [], None, []
+        for line in open(flexFile):
+            if line.startswith('MODEL'):
+                modelId = line.split()[1] if len(line.split()) > 1 else ''
+                if curId is not None and modelId != curId:
+                    groups.append(curAtoms)
+                    curAtoms = []
+                curId = modelId
+            elif line.startswith(('ATOM', 'HETATM')):
+                curAtoms.append(line)
+        if curAtoms:
+            groups.append(curAtoms)
+        return groups
 
     # ------------------------------------------------------------------ #
     #  Utils                                                             #
@@ -417,19 +455,7 @@ class ProtGninaDocking(EMProtocol):
                   f'poses will reference the rigid receptor.')
             return None
 
-        # Group the MODEL blocks by their MODEL id, keeping file order.
-        groups, curId, curAtoms = [], None, []
-        for line in open(flexFile):
-            if line.startswith('MODEL'):
-                modelId = line.split()[1] if len(line.split()) > 1 else ''
-                if curId is not None and modelId != curId:
-                    groups.append(curAtoms)
-                    curAtoms = []
-                curId = modelId
-            elif line.startswith(('ATOM', 'HETATM')):
-                curAtoms.append(line)
-        if curAtoms:
-            groups.append(curAtoms)
+        groups = self._readModelGroups(flexFile)
 
         if len(groups) != len(poses):
             print(f'Warning: {len(groups)} flexible-receptor group(s) for '
@@ -614,31 +640,34 @@ class ProtGninaDocking(EMProtocol):
     #  Validation                                                          #
     # ------------------------------------------------------------------ #
     def _validate(self):
+        errors = self._validateCommon()
+        if self.doFlexRes.get() and not (self.flexRes.get() and self.flexRes.get().strip()):
+            errors.append('Flexible docking is enabled but no flexible residues were defined '
+                          '(use the wizard or type a chain:resid list).')
+        return errors
+
+    def _validateCommon(self):
+        """The checks every gnina docking protocol makes"""
         errors = []
         if not os.path.isfile(Plugin.getGninaBinary()):
             errors.append('gnina binary not found at: %s\n'
                           'Please install it with "scipion3 installb gnina".'
                           % Plugin.getGninaBinary())
-
-        if self.fromReceptor.get() == FROM_POCKET and not self.inputStructROIs.get():
-            errors.append('Pocket mode requires a SetOfStructROIs input.')
-        if self.fromReceptor.get() == FROM_PROTEIN and not self.inputAtomStruct.get():
-            errors.append('Whole-protein mode requires an AtomStruct receptor.')
-
-        if self.numPoses.get() < 1:
-            errors.append('Number of binding modes must be >= 1.')
-        if self.exhaustiveness.get() < 1:
-            errors.append('Exhaustiveness must be >= 1.')
-
-        if self.doFlexRes.get() and not (self.flexRes.get() and self.flexRes.get().strip()):
-            errors.append('Flexible docking is enabled but no flexible residues were defined '
-                          '(use the wizard or type a chain:resid list).')
         return errors
 
     # ------------------------------------------------------------------ #
     #  Summary / methods / citations                                       #
     # ------------------------------------------------------------------ #
     def _summary(self):
+        summary = self._summaryInputs()
+        summary.append(f'CNN scoring: {CNN_SCORING_CHOICES[self.cnnScoring.get()]}')
+        summary.append(f'Exhaustiveness: {self.exhaustiveness.get()} | Modes: {self.numPoses.get()}')
+        if self.hasAttribute('outputSmallMolecules'):
+            summary.append(f'Output poses: {self.outputSmallMolecules.getSize()}')
+        return summary
+
+    def _summaryInputs(self):
+        """The receptor and ligand lines every gnina docking summary opens with"""
         summary = []
         if self.fromReceptor.get() == FROM_PROTEIN and self.inputAtomStruct.get():
             summary.append(f'Receptor: {os.path.basename(self.inputAtomStruct.get().getFileName())}')
@@ -646,10 +675,6 @@ class ProtGninaDocking(EMProtocol):
             summary.append(f'Pockets: {self.inputStructROIs.get().getSize()} ROI(s)')
         if self.inputSmallMolecules.get():
             summary.append(f'Ligands: {self.inputSmallMolecules.get().getSize()} molecule(s)')
-        summary.append(f'CNN scoring: {CNN_SCORING_CHOICES[self.cnnScoring.get()]}')
-        summary.append(f'Exhaustiveness: {self.exhaustiveness.get()} | Modes: {self.numPoses.get()}')
-        if self.hasAttribute('outputSmallMolecules'):
-            summary.append(f'Output poses: {self.outputSmallMolecules.getSize()}')
         return summary
 
     def _methods(self):
