@@ -75,6 +75,11 @@ class Plugin(pwchem.Plugin):
         )
 
         installer.addCommand(
+            f'conda install -n {gninaEnvName} cuda-nvtx=12 -c nvidia -y',
+            'GNINA_NVTX_INSTALLED'
+        )
+
+        installer.addCommand(
             f'wget -O {GNINA_BINARY_NAME} {download_url} && '
             f'chmod +x {GNINA_BINARY_NAME}',
             'GNINA_BINARY_READY'
@@ -126,7 +131,8 @@ class Plugin(pwchem.Plugin):
         """
         # 'is not None': GPU 0 is a valid id and must not be treated as unset.
         gpuStr = f'CUDA_VISIBLE_DEVICES={gpuId} ' if gpuId is not None else ''
-        # UFF.prm is read for --covalent_optimize_lig and nothing else
+        # UFF.prm is read for --covalent_optimize_lig and nothing else, so only
+        # such a run pays for resolving the data directory.
         babelDir = cls.getBabelDataDir() if '--covalent_optimize_lig' in args else ''
         babelStr = f'BABEL_DATADIR="{babelDir}" ' if babelDir else ''
         fullProgram = (
@@ -143,7 +149,19 @@ class Plugin(pwchem.Plugin):
 
     @classmethod
     def getBabelDataDir(cls):
-        """Open Babel data directory holding UFF.prm, or '' if there is none."""
+        """Open Babel data directory holding UFF.prm, or '' if there is none.
+
+        The released gnina binary carries Open Babel's code but none of its
+        data files, and looks UFF.prm up under $BABEL_DATADIR at run time. With
+        that unset it reports "Cannot open UFF.prm" on stderr and then carries
+        on without optimising anything, which is how --covalent_optimize_lig
+        came out strained and scoring positive affinities.
+
+        The directory is pwchem's own Open Babel env, a hard dependency of this
+        plugin. Checked for the file itself, so a protocol can refuse an
+        optimisation that would silently do nothing, and cached: resolving the
+        env costs a conda activation (~2 s).
+        """
         if cls._babelDataDir is None:
             cls._babelDataDir = ''
             dataDirs = glob.glob(os.path.join(pwchem.Plugin.getEnvPath(OPENBABEL_DIC),
