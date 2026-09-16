@@ -66,10 +66,10 @@ class ProtGninaScore(ProtGninaDocking):
     multi-ligand parser from stopping after the first entry.
 
     The output is a copy of the input set whose molecules carry the refreshed
-    GNINA scores (``_energy`` = affinity, ``_cnnScore``, ``_cnnAffinity``). In
-    *Score only* mode the original pose files are kept untouched; the optimisation
-    / minimisation modes do move the atoms, so for those the refined pose is saved
-    and becomes the new pose file.
+    GNINA scores (``_gninaEnergy`` = affinity, ``_gninaCnnScore``,
+    ``_gninaCnnAffinity``). In *Score only* mode the original pose files are kept
+    untouched; the optimisation / minimisation modes do move the atoms, so for
+    those the refined pose is saved and becomes the new pose file.
 
     Receptor conversion is reused from :class:`ProtGninaDocking`; the receptor is
     taken from the input set's protein file.
@@ -198,7 +198,7 @@ class ProtGninaScore(ProtGninaDocking):
                 fout.write(f'{poseKey}\n{body}\n$$$$\n')
 
         args = self._buildScoreArgs(recFile, inSdf, logFile, outSdf)
-        Plugin.runGnina(self, args, cwd=runDir)
+        Plugin.runGnina(self, args, cwd=runDir, gpuId=self.getGpuId())
 
         outPoseDir = self._getPath('outputLigands')
         if minimizing:
@@ -244,9 +244,9 @@ class ProtGninaScore(ProtGninaDocking):
                 print(f"Warning: no GNINA score for pose '{poseKey}'; keeping it unscored.")
                 sd = {}
             # Set the three attributes
-            newMol._energy = pwobj.Float(sd.get('energy'))
-            newMol._cnnScore = pwobj.Float(sd.get('cnnScore'))
-            newMol._cnnAffinity = pwobj.Float(sd.get('cnnAffinity'))
+            newMol._gninaEnergy = pwobj.Float(sd.get('energy'))
+            newMol._gninaCnnScore = pwobj.Float(sd.get('cnnScore'))
+            newMol._gninaCnnAffinity = pwobj.Float(sd.get('cnnAffinity'))
             if minimizing and sd.get('poseFile'):
                 newMol.setPoseFile(sd['poseFile'])
             # Record the receptor the pose was (re)scored against.
@@ -295,11 +295,10 @@ class ProtGninaScore(ProtGninaDocking):
         if seed > 0:
             args += f' --seed {seed}'
 
-        # GPU / CPU
-        gpuList = self._getGPUIds()
-        if getattr(self, USE_GPU).get() and gpuList:
-            args += f' --device {gpuList[0]}'
-        else:
+        # GPU / CPU. The device is chosen through CUDA_VISIBLE_DEVICES in
+        # Plugin.runGnina, not with --device: gnina 1.3.2's Torch backend
+        # ignores that flag and warns about it, so passing it selected nothing.
+        if not getattr(self, USE_GPU).get():
             args += ' --no_gpu'
 
         # Let gnina parallelise scoring of the group's ligands across CPU threads.
@@ -307,7 +306,7 @@ class ProtGninaScore(ProtGninaDocking):
         return args
 
     # ------------------------------------------------------------------ #
-    #  SDF helpers                                                          #
+    #  UTILS                                                             #
     # ------------------------------------------------------------------ #
     def _poseBody(self, poseFile):
         """Return the molblock of a pose (atoms/bonds up to 'M  END'), WITHOUT
@@ -355,27 +354,9 @@ class ProtGninaScore(ProtGninaDocking):
     def _getScoresFile(self, it):
         return self._getExtraPath(f'scores_{it}.json')
 
-    # ------------------------------------------------------------------ #
-    #  Receptor source (override: read it from the docked input set)       #
-    # ------------------------------------------------------------------ #
-    def getOriginalReceptorFile(self, getLink=True):
-        recLink = self.getReceptorLink()
-        if recLink is None or not getLink:
-            recFile = self.inputSmallMolecules.get().getProteinFile()
-            if not recFile:
-                print('No protein file found in the input docked set')
-                return None
-
-            if getLink:
-                recDir = self._getExtraPath('originalReceptor')
-                if not os.path.exists(recDir):
-                    os.mkdir(recDir)
-                recLink = os.path.join(recDir, os.path.basename(recFile))
-                if not os.path.exists(recLink):
-                    os.link(recFile, recLink)
-            else:
-                recLink = recFile
-        return recLink
+    def _inputReceptorFile(self):
+        """Here the receptor is the one the input poses were docked against"""
+        return self.inputSmallMolecules.get().getProteinFile()
 
     # ------------------------------------------------------------------ #
     #  Validation                                                          #
