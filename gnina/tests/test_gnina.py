@@ -25,6 +25,8 @@
 # *
 # **************************************************************************
 
+import os
+
 # Scipion core imports
 from pyworkflow.tests import BaseTest, setupTestProject, DataSet
 from pwem.protocols import ProtImportPdb
@@ -35,7 +37,7 @@ from pwchem.protocols import (ProtChemImportSmallMolecules, ProtChemPrepareRecep
 from pwchem.utils import assertHandle
 
 # Plugin imports
-from ..protocols import ProtGninaDocking, ProtGninaScore
+from ..protocols import ProtGninaDocking, ProtGninaScore, ProtGninaCovalentDocking
 
 
 class TestGninaBase(BaseTest):
@@ -68,8 +70,7 @@ class TestGninaBase(BaseTest):
 
     @classmethod
     def _runImportSmallMols(cls):
-        # A small set of distinct ligands, shared by all tests, so several
-        # molecules exercise the multi-ligand handling.
+        # A small set of distinct ligands.
         cls.protImportSmallMols = cls.newProtocol(
             ProtChemImportSmallMolecules,
             filesPath=cls.dsLig.getFile('mol2'),
@@ -89,9 +90,7 @@ class TestGninaBase(BaseTest):
     @classmethod
     def _runDefineROIs(cls):
         # Define a structural ROI around the heme (HEM) site of 5ni1 and REMOVE
-        # the HEM HETATM from the structure used for docking (remMol / remove=True),
-        # so ligands dock into the freed heme pocket. The "N) " prefix is the
-        # format the ROI-definition wizard stores in 'inROIs'.
+        # the HEM HETATM from the structure used for docking'.
         cls.protDefROIs = cls.newProtocol(
             ProtDefineStructROIs,
             inputAtomStruct=cls.protPrepRec.outputStructure,
@@ -102,9 +101,6 @@ class TestGninaBase(BaseTest):
         cls.proj.launchProtocol(cls.protDefROIs, wait=True)
         return cls.protDefROIs
 
-    # ------------------------------------------------------------------ #
-    #  GNINA runs (helpers reused by the test classes)                     #
-    # ------------------------------------------------------------------ #
     def _runGninaWholeProtein(self):
         protGnina = self.newProtocol(
             ProtGninaDocking,
@@ -186,3 +182,46 @@ class TestGninaScore(TestGninaBase):
         # Every docked pose must come out rescored (no pose lost).
         assertHandle(self.assertEqual, outSet.getSize(), nDocked,
                      cwd=protScore.getWorkingDir())
+
+
+class TestGninaCovalentDocking(TestGninaBase):
+    """Covalent docking on the whole protein. It is using [CH3][N+] as warhead,
+     the N-methyl of the two aminated ligands"""
+
+    # First atom of the match is the one bonded, so a terminal carbon.
+    covalentSmarts = '[CH3][N+]'
+    covalentRecAtom = 'A:104:SG'
+    matchingMols = {'ZINC00000480', 'ZINC00001019'}
+
+    def testCovalentWholeProtein(self):
+        print('\nCovalent docking with GNINA on the whole protein')
+        protGnina = self.newProtocol(
+            ProtGninaCovalentDocking,
+            fromReceptor=0,
+            inputAtomStruct=self.protPrepRec.outputStructure,
+            inputSmallMolecules=self.protImportSmallMols.outputSmallMolecules,
+            covalentRecAtom=self.covalentRecAtom,
+            covalentLigPattern=self.covalentSmarts,
+            covalentOptimizeLig=False,
+            exhaustiveness=4, numPoses=2,
+            numberOfThreads=2)
+        self.proj.launchProtocol(protGnina, wait=False)
+        self._waitOutput(protGnina, 'outputSmallMolecules', sleepTime=10)
+
+        outSet = getattr(protGnina, 'outputSmallMolecules', None)
+        assertHandle(self.assertIsNotNone, outSet, cwd=protGnina.getWorkingDir())
+        assertHandle(self.assertGreater, outSet.getSize(), 0, cwd=protGnina.getWorkingDir())
+
+        for mol in outSet:
+            molName = mol.getMolName()
+            # Only the molecules carrying the pattern are docked; the filter
+            # drops the others before gnina is called.
+            assertHandle(self.assertIn, molName, self.matchingMols,
+                         cwd=protGnina.getWorkingDir())
+
+            # The covalent complex is the output the plain protocol has not got.
+            covFile = getattr(mol, 'covalentPoseFile', None)
+            assertHandle(self.assertIsNotNone, covFile, cwd=protGnina.getWorkingDir())
+            assertHandle(self.assertTrue, os.path.exists(covFile.get()),
+                         cwd=protGnina.getWorkingDir())
+

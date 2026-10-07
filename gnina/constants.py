@@ -105,6 +105,38 @@ SCORING_CHOICES = [
 GNINA_FLEX_PDBQT = 'flex_receptor.pdbqt'
 
 # ---------------------------------------------------------------------------
+# Covalent docking
+#
+# gnina 1.3.2 exposes exactly these flags (gnina --help, "Covalent docking"):
+#   --covalent_rec_atom, --covalent_lig_atom_pattern,
+#   --covalent_lig_atom_position, --covalent_fix_lig_atom_position,
+#   --covalent_bond_order, --covalent_optimize_lig
+# There is no --covalent_tolerance in this release; do not add a param for it.
+# ---------------------------------------------------------------------------
+
+# SMARTS examples for common electrophilic warheads. gnina bonds the FIRST
+# atom of the match to the receptor atom, so patterns must be written with the
+# reacting atom first. Verified against gnina 1.3.2: '[CH2]=[CH]C(=O)' on an
+# acrylamide bonds the terminal CH2, giving the correct anti-Markovnikov
+# thiol-Michael product (C(=O)-CH2-CH2-S-Cys).
+COVALENT_WARHEAD_EXAMPLES = (
+    ('acrylamide / Michael acceptor', '[CH2]=[CH]C(=O)'),
+    ('chloroacetamide',               '[CH2]Cl'),
+    ('vinyl sulfone',                 '[CH2]=[CH]S(=O)=O'),
+    ('boronic acid',                  '[#5]'),
+    ('epoxide',                       '[CH2]1[CH]O1'),
+)
+
+# gnina recommend running with --cnn_scoring none"
+# Sorting has to move to energy too
+COVALENT_CNN_SCORING = 'none'
+COVALENT_SORT_ORDER = 'Energy'
+
+# Bond order of the receptor-ligand bond (--covalent_bond_order). The choice
+# stores the index, so entries must not be reordered: the value is the label.
+COVALENT_BOND_ORDER_CHOICES = ['1', '2', '3']
+
+# ---------------------------------------------------------------------------
 # Rescoring score modes — operate on already-docked poses (no global search).
 
 SCORE_ONLY     = 0   # --score_only : evaluate the pose as-is, no movement

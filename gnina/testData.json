@@ -3,7 +3,8 @@
 	"skippable": {
 		"gpu": [
 			"test_gnina.TestGninaDocking",
-			"test_gnina.TestGninaScore"
+			"test_gnina.TestGninaScore",
+			"test_gnina.TestGninaCovalentDocking"
 		],
 		"dependencies": [
 

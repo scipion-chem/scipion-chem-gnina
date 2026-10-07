@@ -25,3 +25,4 @@
 # **************************************************************************
 from .protocol_gnina import ProtGninaDocking
 from .protocol_gnina_score import ProtGninaScore
+from .protocol_gnina_covalent import ProtGninaCovalentDocking
