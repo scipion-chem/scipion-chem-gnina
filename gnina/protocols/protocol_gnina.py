@@ -34,6 +34,8 @@ from pyworkflow.utils.path import makePath
 import pyworkflow.object as pwobj
 
 from pwem.protocols import EMProtocol
+from pwchem import Plugin as pwchemPlugin
+from pwchem.constants import RDKIT_DIC
 from pwchem.objects import SetOfSmallMolecules, SmallMolecule
 from pwchem.utils import getBaseName, getBaseFileName, makeSubsets, runOpenBabel, convertToSdf
 
@@ -49,6 +51,7 @@ from ..constants import (
 FROM_PROTEIN = 0
 FROM_POCKET = 1
 PDBext, CIFext, PDBQText = '.pdb', '.cif', '.pdbqt'
+MAEexts = ('.mae', '.maegz')
 
 
 class ProtGninaDocking(EMProtocol):
@@ -207,11 +210,17 @@ class ProtGninaDocking(EMProtocol):
     def convertLigandsStep(self, molSet, it):
         """Merge a ligand subset into a single multi-ligand SDF for this thread"""
         outSdf = self._getSubsetLigandFile(it)
+        maeSdfs = self.maeToSdf([mol.getFileName() for mol in molSet], self._getTmpPath(f'mae_{it}'))
         with open(outSdf, 'w') as fout:
             for mol in molSet:
                 molFile = mol.getFileName()
                 molName = getBaseName(molFile)
-                sdfFile = convertToSdf(self, molFile)
+                if molFile.endswith(MAEexts):
+                    sdfFile = maeSdfs.get(molFile)
+                    if sdfFile is None:
+                        continue
+                else:
+                    sdfFile = convertToSdf(self, molFile)
                 with open(sdfFile) as fin:
                     blocks = [b for b in fin.read().split('$$$$') if b.strip()]
                 for block in blocks:
@@ -558,8 +567,35 @@ class ProtGninaDocking(EMProtocol):
     def getReceptorPDBQT(self):
         return os.path.abspath(self._getExtraPath(f'{self.getReceptorName()}.pdbqt'))
 
+    def maeToSdf(self, molFiles, outDir):
+        """SDF copies of the Maestro files among molFiles, as {molFile: sdfFile}.
+        obabel has no Maestro reader, so these go through RDKit
+        """
+        maeFiles = [f for f in molFiles if f.endswith(MAEexts)]
+        if not maeFiles:
+            return {}
+
+        outDir = os.path.abspath(outDir)
+        makePath(outDir)
+        staged = {}
+        for idx, maeFile in enumerate(maeFiles):
+            stagedFile = os.path.join(outDir, f'{idx}_{os.path.basename(maeFile)}')
+            if not os.path.exists(stagedFile):
+                os.symlink(os.path.abspath(maeFile), stagedFile)
+            staged[maeFile] = f'{os.path.splitext(stagedFile)[0]}.sdf'
+
+        args = f' --multiFiles -iD "{outDir}" --pattern "*.mae*" -of sdf --keepHs --outputDir "{outDir}"'
+        pwchemPlugin.runScript(self, 'rdkit_IO.py', args, env=RDKIT_DIC, cwd=outDir)
+
+        sdfDic = {maeFile: sdf for maeFile, sdf in staged.items() if os.path.exists(sdf)}
+        for maeFile in staged.keys() - sdfDic.keys():
+            print(f'Warning: RDKit could not convert {maeFile} to SDF; it is skipped.')
+        return sdfDic
+
     def other2pdbqt(self, otherFile, pdbqtFile):
         """Convert pdb (or other receptor formats) to pdbqt using openbabel."""
+        if otherFile.endswith(MAEexts):
+            otherFile = self._maeReceptorToPdb(otherFile)
         inExt = os.path.splitext(os.path.basename(otherFile))[1]
         inFormat = inExt[1:] if inExt in [PDBext, '.mol2', '.sdf', '.mol', CIFext] else 'pdb'
 
@@ -568,6 +604,16 @@ class ProtGninaDocking(EMProtocol):
         runOpenBabel(self, args=args, popen=True)
         self._cleanReceptorPDBQT(pdbqtFile)
         return os.path.abspath(pdbqtFile)
+
+    def _maeReceptorToPdb(self, maeFile):
+        """A Maestro receptor (Glide output) as PDB. Open Babel cannot read it,
+        so Schrödinger's structconvert does it, as pwchem's score dockings does."""
+        try:
+            from pwchemSchrodinger.utils.utils import convertReceptor2PDB
+        except ImportError:
+            raise ImportError(f'The receptor {maeFile} is a Maestro file; converting it needs '
+                              f'the scipion-chem-schrodinger plugin installed.')
+        return convertReceptor2PDB(maeFile, os.path.abspath(self._getExtraPath(f'{getBaseName(maeFile)}.pdb')))
 
     @staticmethod
     def _cleanReceptorPDBQT(pdbqtFile):

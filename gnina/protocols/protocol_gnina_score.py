@@ -37,7 +37,7 @@ from pwchem.objects import SetOfSmallMolecules
 from pwchem.utils import getBaseName, makeSubsets, convertToSdf
 
 from .. import Plugin
-from .protocol_gnina import ProtGninaDocking
+from .protocol_gnina import ProtGninaDocking, MAEexts
 from ..constants import (
     CNN_SCORING_CHOICES, CNN_SCORING_RESCORE,
     CNN_MODEL_CHOICES, CNN_MODEL_DEFAULT, CNN_MODEL_SENTINEL,
@@ -190,12 +190,13 @@ class ProtGninaScore(ProtGninaDocking):
         outSdf = os.path.join(runDir, 'scored.sdf')
 
         # Build a single multi-ligand SDF.
+        maeSdfs = self.maeToSdf([os.path.abspath(mol.getPoseFile()) for mol in molSet],
+                                self._getTmpPath(f'mae_{it}'))
         with open(inSdf, 'w') as fout:
             for mol in molSet:
-                poseFile = os.path.abspath(mol.getPoseFile())
-                poseKey = getBaseName(poseFile)
-                body = self._poseBody(poseFile)
-                fout.write(f'{poseKey}\n{body}\n$$$$\n')
+                body = self._poseBody(os.path.abspath(mol.getPoseFile()), maeSdfs)
+                if body is not None:
+                    fout.write(f'{self._poseKey(mol)}\n{body}\n$$$$\n')
 
         args = self._buildScoreArgs(recFile, inSdf, logFile, outSdf)
         Plugin.runGnina(self, args, cwd=runDir)
@@ -238,7 +239,7 @@ class ProtGninaScore(ProtGninaDocking):
         newMols = SetOfSmallMolecules.createCopy(inMols, self._getPath(), copyInfo=True)
         for mol in inMols:
             newMol = mol.clone()
-            poseKey = getBaseName(mol.getPoseFile())
+            poseKey = self._poseKey(mol)
             sd = scores.get(poseKey)
             if sd is None:
                 print(f"Warning: no GNINA score for pose '{poseKey}'; keeping it unscored.")
@@ -309,7 +310,12 @@ class ProtGninaScore(ProtGninaDocking):
     # ------------------------------------------------------------------ #
     #  SDF helpers                                                          #
     # ------------------------------------------------------------------ #
-    def _poseBody(self, poseFile):
+    @staticmethod
+    def _poseKey(mol):
+        """Unique title of a pose."""
+        return f'{mol.getObjId()}_{getBaseName(mol.getPoseFile())}'
+
+    def _poseBody(self, poseFile, maeSdfs):
         """Return the molblock of a pose (atoms/bonds up to 'M  END'), WITHOUT
         any SDF data tags.
 
@@ -317,10 +323,16 @@ class ProtGninaScore(ProtGninaDocking):
         a previous docking). Those tags break gnina's multi-ligand SDF parser,
         which then scores only the first molecule of the file, so they must be
         stripped. Non-SDF poses (e.g. AutoDock/Vina .pdbqt) are converted to SDF
-        in Tmp first.
+        in Tmp first; Maestro ones (Glide) already were, by RDKit (`maeSdfs`).
+        None when a Maestro pose could not be converted.
         """
-        ext = os.path.splitext(poseFile)[1].lower()
-        sdf = poseFile if ext == '.sdf' else os.path.abspath(convertToSdf(self, poseFile))
+        if poseFile.endswith(MAEexts):
+            sdf = maeSdfs.get(poseFile)
+            if sdf is None:
+                return None
+        else:
+            ext = os.path.splitext(poseFile)[1].lower()
+            sdf = poseFile if ext == '.sdf' else os.path.abspath(convertToSdf(self, poseFile))
         with open(sdf) as fh:
             block = next((b for b in fh.read().split('$$$$') if b.strip()), '')
         return self._cleanBlock(block)
