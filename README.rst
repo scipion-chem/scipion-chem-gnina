@@ -11,7 +11,7 @@ The plugin provides two protocols:
 - **GNINA docking**: full global docking search of a set of small molecules on a
   whole protein (automatic bounding box) or on a set of structural ROIs
   (binding pockets). Produces a docked ``SetOfSmallMolecules`` whose poses carry
-  the minimized affinity (``_energy``), ``_cnnScore`` and ``_cnnAffinity``.
+  the minimized affinity (``_gninaEnergy``), ``_gninaCnnScore`` and ``_gninaCnnAffinity``.
 - **GNINA rescoring**: re-evaluation of *already-docked* poses, either scoring
   them as they are, locally optimising them, or energy-minimising them inside
   the pocket.
