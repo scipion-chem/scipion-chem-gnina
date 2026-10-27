@@ -44,7 +44,7 @@ SelectChainWizardQT().addTarget(protocol=ProtGninaDocking,
                                 outputs=['flexChain'])
 
 
-class SelectSpecificResiduesWizardQT(SelectResidueWizardQT):
+class SelectGninaResiduesWizardQT(SelectResidueWizardQT):
     _targets, _inputs, _outputs = [], {}, {}
 
     def show(self, form, *params):
@@ -92,7 +92,7 @@ class SelectSpecificResiduesWizardQT(SelectResidueWizardQT):
         # 6. Save the final string back into the protocol output variable
         form.setVar(outputParam[0], formatted_output_string)
 
-SelectSpecificResiduesWizardQT().addTarget(protocol=ProtGninaDocking,
+SelectGninaResiduesWizardQT().addTarget(protocol=ProtGninaDocking,
                                   targets=['flexRes'],
                                   inputs=[{'fromReceptor': ['inputAtomStruct', 'inputStructROIs']}, 'flexChain'],
                                   outputs=['flexRes'])
